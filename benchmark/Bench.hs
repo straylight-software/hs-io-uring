@@ -18,9 +18,11 @@ import System.IoUring.URing (initURing, closeURing, validURing)
 import System.IoUring.Reactor
 import System.IoUring.ZMQ
 import System.IoUring.Logging
+import System.IoUring.Options (withOptions)
 import qualified System.ZMQ4 as ZMQ
-import Foreign (nullPtr)
 import Katip (ls)
+
+import System.IO (hSetBuffering, stdout, BufferMode(NoBuffering))
 
 -- Benchmark configuration
 data BenchConfig = BenchConfig {
@@ -29,12 +31,13 @@ data BenchConfig = BenchConfig {
 
 defaultConfig :: BenchConfig
 defaultConfig = BenchConfig {
-    benchIterations = 100000
+    benchIterations = 1000
   }
 
 -- Main entry point
 main :: IO ()
-main = withLogging "bench" InfoS $ \le -> runKatipContextT le () "main" $ do
+main = withOptions "bench" $ \_opts le -> runKatipContextT le () "main" $ do
+  liftIO $ hSetBuffering stdout NoBuffering
   logMsg "bench" InfoS "io-uring Benchmark Suite"
   logMsg "bench" InfoS "=========================="
   
@@ -102,9 +105,9 @@ benchReactorThroughput = do
     withReactor ctx $ \reactor -> do
       (_, elapsed) <- measureTime $ 
         replicateM_ iterations $ do
-          -- Using Timeout(0) as NOP
+          -- Using NopOp
           _ <- submitRequest reactor $ \push ->
-              push (TimeoutOp nullPtr 0 0)
+              push NopOp
           return ()
           
       let opsPerSec = fromIntegral iterations / elapsed

@@ -25,6 +25,7 @@ module System.IoUring.URing
 import Foreign (Ptr, callocBytes, free, alloca, peek, peekByteOff)
 import Data.Word (Word32, Word64)
 import Data.Int (Int32, Int64)
+import Foreign.C.Types (CInt)
 
 import System.IoUring.Internal.FFI (
     c_io_uring_queue_init, 
@@ -90,12 +91,8 @@ validURing _ = return True
 -- SUBMISSION
 -- ============================================================================
 
-submitIO :: URing -> IO ()
-submitIO (URing ptr) = do
-  ret <- c_io_uring_submit ptr
-  if ret < 0
-    then ioError $ userError $ "io_uring_submit failed: " ++ show ret
-    else return ()
+submitIO :: URing -> IO CInt
+submitIO (URing ptr) = c_io_uring_submit ptr
 
 -- ============================================================================
 -- COMPLETIONS

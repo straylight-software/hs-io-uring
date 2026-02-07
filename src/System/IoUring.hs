@@ -52,9 +52,10 @@ import Network.Socket (SockAddr)
 
 import qualified System.IoUring.URing as URing
 import System.IoUring.Internal.FFI (
-
     c_io_uring_get_sqe,
+    c_hs_uring_prep_nop,
     c_hs_uring_prep_read,
+
     c_hs_uring_prep_write,
     c_hs_uring_prep_readv,
     c_hs_uring_prep_writev,
@@ -139,8 +140,11 @@ closeIoUring (IOCtx caps) = V.forM_ caps closeCapCtx
 
 data IoOp
   -- File operations (disk I/O)
-  = ReadOp  !Fd !FileOffset !(MutablePrimArray RealWorld Word8) !Int !ByteCount
+  = NopOp
+  | ReadOp  !Fd !FileOffset !(MutablePrimArray RealWorld Word8) !Int !ByteCount
+  | ReadPtrOp !Fd !FileOffset !(Ptr Word8) !ByteCount
   | WriteOp !Fd !FileOffset !(PrimArray Word8) !Int !ByteCount
+  | WritePtrOp !Fd !FileOffset !(Ptr Word8) !ByteCount
   | ReadvOp !Fd !FileOffset !(Ptr IOVec) !Int
   | WritevOp !Fd !FileOffset !(Ptr IOVec) !Int
   | SyncOp  !Fd
@@ -223,7 +227,8 @@ submitBatch ctx batchPrep = do
       V.imapM_ (prepareOp ringPtr) ops
       
       -- Submit
-      URing.submitIO uring
+      res <- URing.submitIO uring
+      when (res < 0) $ ioError $ userError $ "io_uring_submit failed: " ++ show res
       
       -- Wait for completions
       -- We expect nOps completions. This is a synchronous batch submit.
@@ -248,12 +253,20 @@ submitBatch ctx batchPrep = do
         let userData = fromIntegral idx
         
         case op of
+          NopOp -> c_hs_uring_prep_nop sqe
+          
           ReadOp (Fd fd) off buf _ len -> do
             let ptr = mutablePrimArrayContents buf
             c_hs_uring_prep_read sqe fd (castPtr ptr) (fromIntegral len) (fromIntegral off)
             
+          ReadPtrOp (Fd fd) off ptr len -> do
+            c_hs_uring_prep_read sqe fd (castPtr ptr) (fromIntegral len) (fromIntegral off)
+            
           WriteOp (Fd fd) off buf _ len -> do
             let ptr = primArrayContents buf
+            c_hs_uring_prep_write sqe fd (castPtr ptr) (fromIntegral len) (fromIntegral off)
+
+          WritePtrOp (Fd fd) off ptr len -> do
             c_hs_uring_prep_write sqe fd (castPtr ptr) (fromIntegral len) (fromIntegral off)
 
           ReadvOp (Fd fd) off iovs cnt -> do

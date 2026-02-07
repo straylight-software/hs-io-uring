@@ -1,0 +1,25 @@
+warning: Git tree '/tmp/haskell-io-uring' has uncommitted changes
+io-uring development environment
+[2026-02-07 02:56:25][http2-proxy.startup][Info][ultraviolence][PID 2239242][ThreadId 4] Starting HTTP/2 -> ZMQ Proxy Demo
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] Initializing io_uring...
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] io_uring initialized. Initializing Reactor...
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] Reactor initialized. Initializing ZMQ...
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] ZMQ Context created.
+[2026-02-07 02:56:25][http2-proxy.backend][Info][ultraviolence][PID 2239242][ThreadId 7] Backend ready.
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] Creatio-uring-proxy: ZMQError { errno = 156384765, source = "getIntOpt", message = "Context was terminated" }
+HasCallStack backtrace:
+  collectBacktraces, called at libraries/ghc-internal/src/GHC/Internal/Exception.hs:169:13 in ghc-internal:GHC.Internal.Exception
+  toExceptionWithBacktrace, called at libraries/ghc-internal/src/GHC/Internal/IO.hs:260:11 in ghc-internal:GHC.Internal.IO
+  throwIO, called at libraries/ghc-internal/src/GHC/Internal/Control/Exception/Base.hs:195:43 in ghc-internal:GHC.Internal.Control.Exception.Base
+
+
+ing Dealer socket...
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] Dealer connected.
+[2026-02-07 02:56:25][http2-proxy.init][Info][ultraviolence][PID 2239242][ThreadId 4] Listening on http://localhost:8080 (HTTP/2 supported)
+io-uring-proxy: Network.Socket.bind: resource busy (Address already in use)
+HasCallStack backtrace:
+  collectBacktraces, called at libraries/ghc-internal/src/GHC/Internal/Exception.hs:169:13 in ghc-internal:GHC.Internal.Exception
+  toExceptionWithBacktrace, called at libraries/ghc-internal/src/GHC/Internal/IO.hs:260:11 in ghc-internal:GHC.Internal.IO
+  throwIO, called at libraries/ghc-internal/src/GHC/Internal/Control/Exception/Base.hs:195:43 in ghc-internal:GHC.Internal.Control.Exception.Base
+
+

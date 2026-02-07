@@ -246,7 +246,7 @@ foreign import ccall unsafe "hs_uring_prep_cancel"
 foreign import ccall unsafe "hs_uring_peek_cqe"
   c_hs_uring_peek_cqe :: Ptr () -> Ptr (Ptr ()) -> IO CInt
 
-foreign import ccall unsafe "hs_uring_wait_cqe"
+foreign import ccall safe "hs_uring_wait_cqe"
   c_hs_uring_wait_cqe :: Ptr () -> Ptr (Ptr ()) -> IO CInt
 
 foreign import ccall unsafe "hs_uring_cqe_seen"

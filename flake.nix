@@ -24,8 +24,13 @@
           ...
         }:
         let
-          # Use GHC 9.10 since 9.12 might be too bleeding edge for some deps like zeromq4-haskell
-          hpkgs = pkgs.haskell.packages.ghc910;
+          # Use GHC 9.12 as requested
+          hpkgs = pkgs.haskell.packages.ghc912.override {
+            overrides = self: super: {
+              # Mark zeromq4-haskell as unbroken if marked broken (common for new GHCs)
+              zeromq4-haskell = pkgs.haskell.lib.markUnbroken super.zeromq4-haskell;
+            };
+          };
 
           # Use callCabal2nix to generate the package derivation
           io-uring = hpkgs.callCabal2nix "io-uring" ./. {
@@ -44,6 +49,10 @@
         {
           packages.default = io-uring-dev;
           packages.io-uring = io-uring-dev;
+
+          checks = {
+            io-uring-test = io-uring-dev;
+          };
 
           devShells.default = hpkgs.shellFor {
             packages = p: [ io-uring-dev ];

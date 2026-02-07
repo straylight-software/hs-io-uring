@@ -28,6 +28,7 @@ common lang
                   , wai
                   , http-types
                   , katip
+                  , optparse-applicative
   ghc-options:      -Wall -Werror -Wcompat -Widentities
                     -Wincomplete-record-updates
                     -Wincomplete-uni-patterns
@@ -49,6 +50,7 @@ library
                    System.IoUring.URing
                    System.IoUring.ZMQ
                    System.IoUring.Logging
+                   System.IoUring.Options
   other-modules:
                    System.IoUring.Socket.Batch
   pkgconfig-depends: liburing >= 2.0
@@ -57,35 +59,35 @@ executable io-uring-echo
   import:          lang
   main-is:         EchoServer.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, katip
+  build-depends:   io-uring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 executable io-uring-http
   import:          lang
   main-is:         HttpServer.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, katip
+  build-depends:   io-uring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 executable bench
   import:          lang
   main-is:         Bench.hs
   hs-source-dirs:  benchmark
-  build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip
+  build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 executable zmq-bench
   import:          lang
   main-is:         ZmqBench.hs
   hs-source-dirs:  benchmark
-  build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip
+  build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 executable io-uring-proxy
   import:          lang
   main-is:         Http2ZmqProxy.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip
+  build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 test-suite test
@@ -118,5 +120,6 @@ test-suite test
                  , vector
                  , primitive
                  , bytestring
+                 , unix
   ghc-options:     -rtsopts
 

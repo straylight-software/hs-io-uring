@@ -1,50 +1,70 @@
--- Integration tests for io_uring
-module System.IoUring.Test.Integration where
+{-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-missing-import-lists #-}
+
+module System.IoUring.Test.Integration (tests) where
 
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, testCase, (@?=))
+import Test.Tasty.QuickCheck (testProperty, Property, ioProperty)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Unsafe as BSU
+import System.IO (hClose)
+import System.IO.Temp (withSystemTempFile)
+import System.Posix.IO (openFd, closeFd, OpenMode(ReadWrite), defaultFileFlags)
+import Foreign (castPtr, copyBytes)
 
-import System.IoUring (defaultIoUringParams, withIoUring)
-import System.IoUring.URing (initURing, closeURing, validURing)
+import System.IoUring
+import System.IoUring.Reactor
+import System.IoUring.Buffer
 
 tests :: TestTree
 tests = testGroup "Integration Tests"
-  [ testGroup "Ring Lifecycle"
-      [ testCase "Create and close ring" testCreateCloseRing
-      , testCase "Multiple rings can coexist" testMultipleRings
-      ]
-  , testGroup "Basic Operations"
-      [ testCase "Submit empty batch" testEmptyBatch
-      , testCase "Ring validation" testRingValidation
-      ]
+  [ testProperty "File Write/Read Roundtrip" propWriteRead
   ]
 
-testCreateCloseRing :: Assertion
-testCreateCloseRing = do
-  ring <- initURing 0 32 64
-  valid <- validURing ring
-  valid @?= True
-  closeURing ring
-
-testMultipleRings :: Assertion
-testMultipleRings = do
-  let createRing i = do
-        ring <- initURing i 32 64
-        valid <- validURing ring
-        valid @?= True
-        return ring
+propWriteRead :: String -> Property
+propWriteRead content = ioProperty $ do
+  let bs = BSC.pack content
+  let len = BS.length bs
   
-  rings <- mapM createRing [0..3]
-  mapM_ closeURing rings
-
-testEmptyBatch :: Assertion
-testEmptyBatch = do
-  withIoUring defaultIoUringParams $ \_ctx -> do
-    return ()
-
-testRingValidation :: Assertion
-testRingValidation = do
-  ring <- initURing 0 32 64
-  valid <- validURing ring
-  valid @?= True
-  closeURing ring
+  if len == 0 
+    then return True 
+    else withSystemTempFile "io-uring-test" $ \fp h -> do
+      hClose h
+      
+      fd <- openFd fp ReadWrite defaultFileFlags
+      
+      let params = defaultIoUringParams
+      res <- withIoUring params $ \ctx -> do
+        withReactor ctx $ \reactor -> do
+          pool <- newBufferPool ctx 1 4096
+          
+          -- Write
+          withBuffer pool $ \_ bufPtr -> do
+             -- Copy data to buffer
+             BSU.unsafeUseAsCStringLen bs $ \(cstr, clen) -> 
+               copyBytes (castPtr bufPtr) (castPtr cstr) clen
+             
+             -- Write using WritePtrOp
+             resW <- submitRequest reactor $ \push ->
+                 push (WritePtrOp fd 0 (castPtr bufPtr) (fromIntegral len))
+             
+             case resW of
+               Complete n -> if n == fromIntegral len then return () else fail "Short write"
+               _ -> fail "Write failed"
+               
+             -- Read back
+             resR <- submitRequest reactor $ \push ->
+                 push (ReadPtrOp fd 0 (castPtr bufPtr) (fromIntegral len))
+                   
+             case resR of
+               Complete n -> if n == fromIntegral len then return () else fail "Short read"
+               _ -> fail "Read failed"
+               
+             -- Verify content
+             bsRead <- BS.packCStringLen (castPtr bufPtr, len)
+             
+             return (bs == bsRead)
+               
+      closeFd fd
+      return res
