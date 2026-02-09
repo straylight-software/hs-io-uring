@@ -28,6 +28,8 @@ common lang
                   , wai
                   , http-types
                   , katip
+                  , async
+                  , unix
   ghc-options:      -Wall -Werror -Wcompat -Widentities
                     -Wincomplete-record-updates
                     -Wincomplete-uni-patterns
@@ -43,80 +45,112 @@ library
   c-sources:       cbits/uring_compat.c
   exposed-modules:
                    System.IoUring
-                   System.IoUring.Buffer
-                   System.IoUring.Reactor
                    System.IoUring.Internal.FFI
                    System.IoUring.URing
-                   System.IoUring.ZMQ
-                   System.IoUring.Logging
-  other-modules:
                    System.IoUring.Socket.Batch
-  pkgconfig-depends: liburing >= 2.0
-
-executable io-uring-echo
-  import:          lang
-  main-is:         EchoServer.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable io-uring-http
-  import:          lang
-  main-is:         HttpServer.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable bench
-  import:          lang
-  main-is:         Bench.hs
-  hs-source-dirs:  benchmark
-  build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable zmq-bench
-  import:          lang
-  main-is:         ZmqBench.hs
-  hs-source-dirs:  benchmark
-  build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable io-uring-proxy
-  import:          lang
-  main-is:         Http2ZmqProxy.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-test-suite test
-  import:          lang
-  type:            exitcode-stdio-1.0
-  main-is:         Main.hs
-  hs-source-dirs:  test
+                   System.IO.Engine.Types
+                   System.IO.Engine.Posix
+                   System.IO.Engine.URing
   other-modules:
-                   System.IoUring.Test.Concurrency
-                 , System.IoUring.Test.EdgeCases
-                 , System.IoUring.Test.FFI
-                 , System.IoUring.Test.Integration
-                 , System.IoUring.Test.MemorySafety
-                 , System.IoUring.Test.Operations
-                 ,                    System.IoUring.Test.Properties
-                 , System.IoUring.Test.Stress
-                 , System.IoUring.Test.Reactor
-                 , System.IoUring.Test.Buffer
-                 , System.IoUring.Test.ZMQ
-  build-depends:
-                   io-uring
-                 , tasty >=1.2
-                 , tasty-hunit >=0.10
-                 , tasty-quickcheck >=0.10
-                 , QuickCheck >=2.14
-                 , temporary
-                 , async
-                 , zeromq4-haskell
-                 , network
-                 , vector
-                 , primitive
+  pkgconfig-depends: liburing >= 2.0
+  extra-libraries: uring
+
+executable chat-client
+  import:          lang
+  main-is:         ChatClient.hs
+  hs-source-dirs:  app
+  build-depends:   io-uring
+                 , brick
+                 , vty
+                 , vty-crossplatform
+                 , tls >= 2.0
+                 , crypton-x509-system
+                 , crypton-x509-store
+                 , data-default-class
+                 , aeson
+                 , http-types
                  , bytestring
-  ghc-options:     -rtsopts
+                 , text
+                 , network
+                 , async
+                 , stm
+                 , memory
+                 , vector
+                 , microlens
+                 , microlens-th
+                 , microlens-mtl
+                 , mtl
+                 , tls-session-manager
+                 , network-simple
+                 , network-simple-tls
+  ghc-options:     -rtsopts -O2 -threaded
+  pkgconfig-depends: liburing >= 2.0
+  extra-libraries: uring
+
+-- executable io-uring-echo
+--   import:          lang
+--   main-is:         EchoServer.hs
+--   hs-source-dirs:  app
+--   build-depends:   io-uring, katip
+--   ghc-options:     -rtsopts -O2 -threaded
+
+-- executable io-uring-http
+--   import:          lang
+--   main-is:         HttpServer.hs
+--   hs-source-dirs:  app
+--   build-depends:   io-uring, katip
+--   ghc-options:     -rtsopts -O2 -threaded
+
+-- executable bench
+--   import:          lang
+--   main-is:         Bench.hs
+--   hs-source-dirs:  benchmark
+--   build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip
+--   ghc-options:     -rtsopts -O2 -threaded
+
+-- executable zmq-bench
+--   import:          lang
+--   main-is:         ZmqBench.hs
+--   hs-source-dirs:  benchmark
+--   build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip
+--   ghc-options:     -rtsopts -O2 -threaded
+
+-- executable io-uring-proxy
+--   import:          lang
+--   main-is:         Http2ZmqProxy.hs
+--   hs-source-dirs:  app
+--   build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip
+--   ghc-options:     -rtsopts -O2 -threaded
+
+-- test-suite test
+--   import:          lang
+--   type:            exitcode-stdio-1.0
+--   main-is:         Main.hs
+--   hs-source-dirs:  test
+--   other-modules:
+--                    System.IoUring.Test.Concurrency
+--                  , System.IoUring.Test.EdgeCases
+--                  , System.IoUring.Test.FFI
+--                  , System.IoUring.Test.Integration
+--                  , System.IoUring.Test.MemorySafety
+--                  , System.IoUring.Test.Operations
+--                  ,                    System.IoUring.Test.Properties
+--                  , System.IoUring.Test.Stress
+--                  , System.IoUring.Test.Reactor
+--                  , System.IoUring.Test.Buffer
+--                  , System.IoUring.Test.ZMQ
+--   build-depends:
+--                    io-uring
+--                  , tasty >=1.2
+--                  , tasty-hunit >=0.10
+--                  , tasty-quickcheck >=0.10
+--                  , QuickCheck >=2.14
+--                  , temporary
+--                  , async
+--                  , zeromq4-haskell
+--                  , network
+--                  , vector
+--                  , primitive
+--                  , bytestring
+--   ghc-options:     -rtsopts
 

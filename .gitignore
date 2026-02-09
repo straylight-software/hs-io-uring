@@ -1,0 +1,10 @@
+/dist-newstyle/
+.nixd.json
+.nil.toml
+.direnv
+.devshell
+result
+/app/Debug.hi
+/app/Debug.o
+/src/System/IO/Engine/Types.o
+/src/System/IO/Engine/Types.hi
