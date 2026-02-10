@@ -16,21 +16,16 @@ module Chat.OpenAI
   , complete
   ) where
 
-import Control.Exception (SomeException, try)
 import Data.Aeson (FromJSON, ToJSON, decode, encode, object, (.:), (.=))
 import Data.Aeson.Types (parseEither, withObject)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
-import Data.Default.Class (def)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
 import GHC.Generics (Generic)
-import Network.Simple.TCP.TLS (connect)
-import Network.TLS qualified as TLS
-import Network.TLS.Extra.Cipher qualified as TLS
-import System.X509 (getSystemCertificateStore)
+import System.IO.Trinity.Posix.TLS (TlsConnection, tlsClose, tlsConnect, tlsRecv, tlsSend)
 
 -- ════════════════════════════════════════════════════════════════════════════
 --                                                                     // types
@@ -83,29 +78,26 @@ mkClient = mkOpenRouterClient
 
 complete :: OpenAIClient -> [ChatMessage] -> IO (Either Text Text)
 complete client messages = do
-  certStore <- getSystemCertificateStore
   let host = T.unpack (clientHost client)
-      tlsParams = (TLS.defaultParamsClient host "")
-        { TLS.clientSupported = def { TLS.supportedCiphers = TLS.ciphersuite_strong }
-        , TLS.clientShared = def { TLS.sharedCAStore = certStore }
-        }
 
-  result <- try $ connect tlsParams host "443" $ \(ctx, _) -> do
-    -- build request
-    let body = buildRequestBody client messages
-        bodyLen = LBS.length body
-        request = buildHttpRequest client bodyLen
+  connResult <- tlsConnect host "443"
 
-    -- send request
-    TLS.sendData ctx (LBS.fromStrict request)
-    TLS.sendData ctx body
+  case connResult of
+    Left err -> pure $ Left $ T.pack $ "Connection error: " ++ show err
+    Right conn -> do
+      -- build request
+      let body = buildRequestBody client messages
+          bodyLen = LBS.length body
+          request = buildHttpRequest client bodyLen
 
-    -- read response
-    readHttpResponse ctx
+      -- send request
+      _ <- tlsSend conn request
+      _ <- tlsSend conn (LBS.toStrict body)
 
-  pure $ case result of
-    Left (e :: SomeException) -> Left $ T.pack $ "Connection error: " ++ show e
-    Right response -> parseResponse response
+      -- read response
+      response <- readHttpResponse conn
+      tlsClose conn
+      pure $ parseResponse response
 
 -- ════════════════════════════════════════════════════════════════════════════
 --                                                                   // helpers
@@ -129,19 +121,21 @@ buildHttpRequest client contentLength = T.encodeUtf8 $ T.concat
   , "\r\n"
   ]
 
-readHttpResponse :: TLS.Context -> IO LBS.ByteString
-readHttpResponse ctx = readUntilDone LBS.empty
+readHttpResponse :: TlsConnection -> IO LBS.ByteString
+readHttpResponse conn = readUntilDone LBS.empty
   where
     readUntilDone acc = do
-      chunk <- TLS.recvData ctx
-      if BS.null chunk
-        then pure acc
-        else do
-          let newAcc = acc <> LBS.fromStrict chunk
-          -- check if we have complete response
-          if hasCompleteResponse newAcc
-            then pure newAcc
-            else readUntilDone newAcc
+      result <- tlsRecv conn 4096
+      case result of
+        Left _ -> pure acc  -- connection closed or error
+        Right chunk
+          | BS.null chunk -> pure acc
+          | otherwise -> do
+              let newAcc = acc <> LBS.fromStrict chunk
+              -- check if we have complete response
+              if hasCompleteResponse newAcc
+                then pure newAcc
+                else readUntilDone newAcc
 
     hasCompleteResponse bs
       | Just headerEnd <- findSubstring "\r\n\r\n" (LBS.toStrict bs)

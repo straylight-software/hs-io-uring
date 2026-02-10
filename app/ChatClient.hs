@@ -32,8 +32,7 @@ import Chat.Logic
   )
 import Chat.OpenAI qualified as OpenAI
 import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Exception (SomeException, try)
-import Control.Monad (forever, void)
+import Control.Monad (void)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -43,7 +42,7 @@ import Graphics.Vty.CrossPlatform qualified as VCP
 import Lens.Micro ((^.))
 import Lens.Micro.Mtl (zoom, (.=))
 import Lens.Micro.TH (makeLenses)
-import Network.Simple.TCP (Socket, connect, recv, send)
+import System.IO.Trinity.Posix (TcpConnection, tcpConnect, tcpRecv, tcpSend, tcpClose)
 import System.Environment (lookupEnv)
 import System.IO (IOMode (ReadWriteMode))
 import System.IO.EventStream
@@ -168,36 +167,35 @@ main = do
   -- open journal
   journal <- openJournal "chat.journal" ReadWriteMode
 
-  -- network setup (try to connect)
-  connResult <- try $ connect "127.0.0.1" "8080" $ \(sock, remoteAddr) ->
-    runWithSocket sock remoteAddr uiChan reactorChan journal openaiClient
+  -- network setup (try to connect via Trinity.Posix)
+  connResult <- tcpConnect "127.0.0.1" "8080"
 
-  -- handle connection result
-  handleConnectionResult connResult uiChan reactorChan journal openaiClient
+  case connResult of
+    Left _err ->
+      -- no server, run offline
+      runAppWithNetwork Nothing openaiClient uiChan reactorChan journal
+    Right conn -> do
+      -- connected, start input pump
+      inputPumpId <- forkIO $ inputPump conn reactorChan
+      runAppWithNetwork (Just conn) openaiClient uiChan reactorChan journal
+      killThread inputPumpId
+      tcpClose conn
 
   where
-    runWithSocket sock _remoteAddr uiChan reactorChan journal openaiClient = do
-      inputPumpId <- forkIO $ inputPump sock reactorChan
-      runAppWithNetwork (Just sock) openaiClient uiChan reactorChan journal
-      killThread inputPumpId
-
-    inputPump sock reactorChan = forever $ do
-      msg <- recv sock 4096
-      handleReceivedMessage msg reactorChan
-
-    handleReceivedMessage Nothing reactorChan = do
-      BChan.writeBChan reactorChan (NetError "Connection Closed")
-      threadDelay 10_000_000
-      error "Socket EOF"
-    handleReceivedMessage (Just bs) reactorChan =
-      BChan.writeBChan reactorChan (NetReceived (T.decodeUtf8 bs))
-
-    handleConnectionResult (Left (_e :: SomeException)) uiChan reactorChan journal openaiClient =
-      runAppWithNetwork Nothing openaiClient uiChan reactorChan journal
-    handleConnectionResult (Right _) _ _ _ _ = pure ()
+    inputPump conn reactorChan = inputLoop
+      where
+        inputLoop = do
+          result <- tcpRecv conn 4096
+          case result of
+            Left _err -> do
+              BChan.writeBChan reactorChan (NetError "Connection Closed")
+              threadDelay 10_000_000
+            Right bs -> do
+              BChan.writeBChan reactorChan (NetReceived (T.decodeUtf8 bs))
+              inputLoop
 
 runAppWithNetwork
-  :: Maybe Socket
+  :: Maybe TcpConnection
   -> Maybe OpenAI.OpenAIClient
   -> BChan.BChan AppEvent
   -> BChan.BChan ChatEvent
@@ -268,7 +266,7 @@ runChatRuntime config uiChan journal startState executor = do
         comFrame newState
 
 mkExecutor
-  :: Maybe Socket
+  :: Maybe TcpConnection
   -> Maybe OpenAI.OpenAIClient
   -> BChan.BChan ChatEvent
   -> OutputIntent
@@ -288,6 +286,6 @@ mkExecutor _ Nothing reactorChan (QueryLLM prompt) = void $ forkIO $ do
   BChan.writeBChan reactorChan (AICompletion response)
 
 mkExecutor Nothing _ _ _ = pure ()  -- offline
-mkExecutor (Just sock) _ _ (SendPacket bs) = send sock bs
+mkExecutor (Just conn) _ _ (SendPacket bs) = void $ tcpSend conn bs
 mkExecutor _ _ _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
 mkExecutor _ _ _ _ = pure ()

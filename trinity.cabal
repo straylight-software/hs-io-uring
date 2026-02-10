@@ -39,6 +39,10 @@ common lang
                   , async
                   , unix
                   , binary
+                  , text
+                  , tls >= 2.0
+                  , data-default-class
+                  , crypton-x509-system
   default-extensions: ImportQualifiedPost
   ghc-options:      -Wall -Werror -Wcompat -Widentities
                     -Wincomplete-record-updates
@@ -63,8 +67,10 @@ library
                    System.IO.Engine.URing
                    System.IO.EventStream
                    System.IO.EventStream.Journal
-                   System.IO.Reactor
-                   System.IO.Trinity
+                    System.IO.Reactor
+                    System.IO.Trinity
+                    System.IO.Trinity.Posix
+                    System.IO.Trinity.Posix.TLS
   other-modules:
   pkgconfig-depends: liburing >= 2.0
   extra-libraries: uring
@@ -79,26 +85,11 @@ executable chat-client
                  , brick
                  , vty
                  , vty-crossplatform
-                 , tls >= 2.0
-                 , crypton-x509-system
-                 , crypton-x509-store
-                 , data-default-class
                  , aeson
-                 , http-types
-                 , bytestring
-                 , text
-                 , network
-                 , async
-                 , stm
-                 , memory
-                 , vector
                  , microlens
                  , microlens-th
                  , microlens-mtl
                  , mtl
-                 , tls-session-manager
-                 , network-simple
-                 , network-simple-tls
   ghc-options:     -rtsopts -O2 -threaded
   pkgconfig-depends: liburing >= 2.0
   extra-libraries: uring
