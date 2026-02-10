@@ -1,14 +1,22 @@
 cabal-version:      3.0
-name:               io-uring
+name:               trinity
 version:            0.1.0.0
-synopsis:           Type-safe io_uring bindings supporting both file and socket I/O
-homepage:           https://github.com/well-typed/io-uring
+synopsis:           Deterministic replay engine with io_uring backend
+description:
+  The Trinity architecture, originated by John Carmack in the Quake III
+  Arena engine (1999). Deterministic simulation, event sourcing, and
+  async I/O done right — 25 years before the industry caught up.
+  .
+  Extended with coeffect tracking, cryptographic attestation, and
+  modern Haskell. io_uring backend for high-performance Linux I/O.
+homepage:           https://github.com/straylight-software/trinity
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             Well-Typed LLP
-maintainer:         info@well-typed.com
-copyright:          (c) 2025 Well-Typed LLP
-category:           System
+author:             Straylight Software
+maintainer:         b7r6@straylight.software
+copyright:          (c) 2026 Straylight Software
+                    Architecture: John Carmack (1999)
+category:           System, Concurrency, Game
 build-type:         Simple
 tested-with:        GHC == 9.6, GHC == 9.8, GHC == 9.10, GHC == 9.12
 
@@ -67,7 +75,7 @@ executable chat-client
   other-modules:   Chat.Logic
                ,   Chat.OpenAI
   hs-source-dirs:  app
-  build-depends:   io-uring
+  build-depends:   trinity
                  , brick
                  , vty
                  , vty-crossplatform
@@ -142,7 +150,7 @@ test-suite test
                  , System.IoUring.Test.Operations
                  , System.IoUring.Test.Properties
   build-depends:
-                   io-uring
+                   trinity
                  , tasty >=1.2
                  , tasty-hunit >=0.10
                  , tasty-quickcheck >=0.10
