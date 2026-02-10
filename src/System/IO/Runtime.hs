@@ -1,76 +1,104 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--                                                   // system // io // runtime
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 module System.IO.Runtime
-  ( RuntimeConfig(..)
+  ( RuntimeConfig (..)
   , runReactor
   ) where
 
-import System.IO.EventStream 
-  ( EventStream(append, next)
-  , StreamMode(Live, Replay)
-  , Entry(Entry, sequenceId, timestamp, checksum, event)
-  )
-import System.IO.Reactor (Reactor(react), OutputIntent(LogMessage, SendPacket, WriteFile, QueryLLM))
-import Data.Binary (Binary)
 import Control.Monad (forM_)
+import Data.Binary (Binary)
 import Data.IORef (newIORef, readIORef, writeIORef)
+import System.IO.EventStream
+  ( Entry (Entry, checksum, event, sequenceId, timestamp)
+  , EventStream (append, next)
+  , StreamMode (Live, Replay)
+  )
+import System.IO.Reactor
+  ( OutputIntent (LogMessage, QueryLLM, SendPacket, WriteFile)
+  , Reactor (react)
+  )
+
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                               // config
+-- ════════════════════════════════════════════════════════════════════════════
 
 data RuntimeConfig s e = RuntimeConfig
-  { mode    :: StreamMode
-  , stream  :: s                 -- ^ The Journal/EventStream
-  , tick    :: IO (Maybe e)      -- ^ Source of new events (Live only). Returns Nothing if no event ready.
+  { mode :: StreamMode
+  , stream :: s
+  -- ^ The Journal/EventStream.
+  , tick :: IO (Maybe e)
+  -- ^ Source of new events (Live only). Returns Nothing if no event ready.
   }
 
--- | The Main Loop
-runReactor :: (EventStream s, Reactor r e, Binary e) 
-           => RuntimeConfig s e 
-           -> r 
-           -> IO ()
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                               // main loop
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | The Main Loop.
+--
+-- This function drives the entire system. It is agnostic to the domain logic.
+runReactor
+  :: (EventStream s, Reactor r e, Binary e)
+  => RuntimeConfig s e
+  -> r
+  -> IO ()
 runReactor config initialR = do
   stateRef <- newIORef initialR
-  
-  let loop = do
-        currentState <- readIORef stateRef
-        
-        -- Get next entry based on mode
-        mEntry <- case mode config of
-          Live -> do
-             -- Poll input source
-             mEvent <- tick config
-             case mEvent of
-               Nothing -> return Nothing -- No new input, maybe sleep?
-               Just evt -> do
-                 -- Construct Entry (In reality, timestamp would be current time)
-                 -- For now we stub sequence/time
-                 let entry = Entry 
-                       { sequenceId = 0 -- TODO: increment
-                       , timestamp  = 0 -- TODO: getMonotonicTime
-                       , checksum   = 0 
-                       , event      = evt
-                       }
-                 -- Persist to Log
-                 append (stream config) entry
-                 return (Just entry)
-                 
-          Replay -> do
-             -- Read from Log
-             next (stream config)
-        
-        case mEntry of
-          Nothing -> return () -- Exit loop or idle
-          Just entry -> do
-             -- Pure Transition
-             let (newState, intents) = react currentState entry
-             
-             -- Execute Side Effects
-             case mode config of
-               Live -> executeIntents intents
-               Replay -> verifyIntents intents -- In replay we might verify against a log of expected outputs
-             
-             writeIORef stateRef newState
-             loop
+
+  let
+    loop = do
+      currentState <- readIORef stateRef
+
+      -- Get next entry based on mode
+      mEntry <- case mode config of
+        Live -> pollLiveInput config
+        Replay -> next (stream config)
+
+      case mEntry of
+        Nothing -> return () -- Exit loop or idle
+        Just entry -> do
+          -- Pure Transition
+          let (newState, intents) = react currentState entry
+
+          -- Execute Side Effects
+          case mode config of
+            Live -> executeIntents intents
+            Replay -> verifyIntents intents
+
+          writeIORef stateRef newState
+          loop
 
   loop
+
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                                  // helpers
+-- ════════════════════════════════════════════════════════════════════════════
+
+pollLiveInput
+  :: (EventStream s, Binary e)
+  => RuntimeConfig s e
+  -> IO (Maybe (Entry e))
+pollLiveInput config = do
+  mEvent <- tick config
+  case mEvent of
+    Nothing -> return Nothing
+    Just evt -> do
+      -- Construct Entry
+      -- TODO: Use real timestamp and sequence ID
+      let
+        entry = Entry
+          { sequenceId = 0
+          , timestamp = 0
+          , checksum = 0
+          , event = evt
+          }
+      -- Persist to Log
+      append (stream config) entry
+      return (Just entry)
 
 executeIntents :: [OutputIntent] -> IO ()
 executeIntents intents = forM_ intents $ \intent -> do

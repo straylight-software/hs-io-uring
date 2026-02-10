@@ -1,35 +1,50 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--                                                   // system // io // journal
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 module System.IO.EventStream.Journal
-  ( FileJournal(..)
+  ( FileJournal (..)
   , openJournal
   ) where
 
-import System.IO 
-  ( Handle
-  , IOMode(AppendMode)
-  , openBinaryFile
-  , hFlush
-  , hClose
-  , hSeek
-  , SeekMode(SeekFromEnd)
-  , hIsEOF
-  )
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as LBS
-import Data.Binary (encode, decode)
-import Data.Binary.Get (runGet, getWord32le)
-import Data.Binary.Put (runPut, putWord32le, putLazyByteString)
-import System.IO.EventStream 
-  ( EventStream(append, next, flush, close)
-  )
+import Data.Binary (decode, encode)
+import Data.Binary.Get (getWord32le, runGet)
+import Data.Binary.Put (putLazyByteString, putWord32le, runPut)
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Word (Word32)
+import System.IO
+  ( Handle
+  , IOMode (AppendMode)
+  , SeekMode (SeekFromEnd)
+  , hClose
+  , hFlush
+  , hIsEOF
+  , hSeek
+  , openBinaryFile
+  )
+import System.IO.EventStream (EventStream (append, close, flush, next))
 
--- | A simple file-backed journal
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                                      // type
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- | A simple file-backed journal.
+--
+-- This implementation uses a length-prefixed framing format:
+-- [Length :: Word32LE] [Payload :: Bytes]
+--
+-- This ensures that we can detect partial writes or corruption.
 data FileJournal = FileJournal
   { journalHandle :: Handle
-  , journalPath   :: FilePath
+  , journalPath :: FilePath
   }
+
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                              // construction
+-- ════════════════════════════════════════════════════════════════════════════
 
 openJournal :: FilePath -> IOMode -> IO FileJournal
 openJournal path mode = do
@@ -37,37 +52,45 @@ openJournal path mode = do
   -- If appending, ensure we are at the end
   case mode of
     AppendMode -> hSeek h SeekFromEnd 0
-    _          -> return ()
+    _ -> return ()
   return $ FileJournal h path
+
+-- ════════════════════════════════════════════════════════════════════════════
+--                                                             // implementation
+-- ════════════════════════════════════════════════════════════════════════════
 
 instance EventStream FileJournal where
   append (FileJournal h _) entry = do
-    let payload = encode entry
-        len     = fromIntegral (LBS.length payload) :: Word32
-        frame   = runPut $ do
-          putWord32le len
-          putLazyByteString payload
-    
+    let
+      payload = encode entry
+      len = fromIntegral (LBS.length payload) :: Word32
+      frame = runPut $ do
+        putWord32le len
+        putLazyByteString payload
+
     LBS.hPut h frame
+    -- In a real high-perf system, we wouldn't flush every time,
+    -- or we'd rely on the OS page cache + periodic fsync.
+    -- For correctness/reproducibility safety, we flush.
     hFlush h
 
   next (FileJournal h _) = do
     eof <- hIsEOF h
-    if eof 
+    if eof
       then return Nothing
       else do
         -- Read Length (4 bytes)
         lenBytes <- BS.hGet h 4
         if BS.length lenBytes < 4
-           then return Nothing -- Unexpected EOF
-           else do
-             let len = runGet getWord32le (LBS.fromStrict lenBytes)
-             -- Read Payload
-             payload <- LBS.hGet h (fromIntegral len)
-             if LBS.length payload < fromIntegral len
-                then return Nothing -- Unexpected EOF or corruption
-                else return (Just (decode payload))
+          then return Nothing -- Unexpected EOF
+          else do
+            let len = runGet getWord32le (LBS.fromStrict lenBytes)
+            -- Read Payload
+            payload <- LBS.hGet h (fromIntegral len)
+            if LBS.length payload < fromIntegral len
+              then return Nothing -- Unexpected EOF or corruption
+              else return (Just (decode payload))
 
   flush (FileJournal h _) = hFlush h
-  
+
   close (FileJournal h _) = hClose h

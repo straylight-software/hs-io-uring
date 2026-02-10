@@ -31,6 +31,7 @@ common lang
                   , async
                   , unix
                   , binary
+  default-extensions: ImportQualifiedPost
   ghc-options:      -Wall -Werror -Wcompat -Widentities
                     -Wincomplete-record-updates
                     -Wincomplete-uni-patterns
