@@ -22,15 +22,18 @@ import qualified Brick.AttrMap as A
 import qualified Graphics.Vty as V
 import qualified Graphics.Vty.CrossPlatform as VCP
 import qualified Brick.BChan as BChan
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Monad (void)
+import Control.Concurrent (forkIO, threadDelay, killThread)
+import Control.Monad (void, forever)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import qualified Data.Text as T
--- import qualified Data.Text.Encoding as T
+import qualified Data.Text.Encoding as T
 import Lens.Micro ((^.))
 import Lens.Micro.TH (makeLenses)
 import Lens.Micro.Mtl (zoom, (.=))
+import Network.Simple.TCP (connect, recv, send, Socket)
+import Control.Exception (try, SomeException)
+-- import qualified Data.ByteString as BS
 
 -- Reactor Imports
 import System.IO.EventStream 
@@ -44,7 +47,7 @@ import System.IO.Runtime (RuntimeConfig(RuntimeConfig, mode, stream, tick))
 import System.IO (IOMode(ReadWriteMode))
 import Chat.Logic 
   ( ChatState(messages, status)
-  , ChatEvent(UserInput)
+  , ChatEvent(UserInput, NetReceived, NetError)
   , Message(Message)
   )
 
@@ -138,15 +141,45 @@ main = do
   -- 2. Open Journal
   journal <- openJournal "chat.journal" ReadWriteMode
 
+  -- 3. Network Setup (Try to connect)
+  appendFile "debug.log" "Main: Attempting connection...\n"
+  connResult <- try $ connect "127.0.0.1" "8080" $ \(sock, remoteAddr) -> do
+      appendFile "debug.log" $ "Main: Connected to " ++ show remoteAddr ++ "\n"
+      
+      -- 3.1 Spawn Input Pump
+      inputPumpId <- forkIO $ forever $ do
+          msg <- recv sock 4096
+          case msg of
+              Nothing -> do
+                  appendFile "debug.log" "Main: Socket EOF\n"
+                  BChan.writeBChan reactorChan (NetError "Connection Closed")
+                  threadDelay 10000000 
+                  error "Socket EOF" 
+              Just bs -> do
+                  appendFile "debug.log" $ "Main: Recv bytes: " ++ show bs ++ "\n"
+                  BChan.writeBChan reactorChan (NetReceived (T.decodeUtf8 bs)) 
+      
+      runAppWithNetwork (Just sock) uiChan reactorChan journal
+      
+      -- Cleanup
+      killThread inputPumpId
+
+  case connResult of
+      Left (e :: SomeException) -> do
+          appendFile "debug.log" $ "Main: Connection failed: " ++ show e ++ "\n"
+          runAppWithNetwork Nothing uiChan reactorChan journal
+      Right _ -> return ()
+
+runAppWithNetwork :: Maybe Socket -> BChan.BChan AppEvent -> BChan.BChan ChatEvent -> FileJournal -> IO ()
+runAppWithNetwork sock uiChan reactorChan journal = do
   -- 2.5 Replay History
-  -- We need to replay the journal to get the initial state
   putStrLn "Replaying journal..."
   let replayLoop state = do
         mEntry <- next journal
         case mEntry of
           Nothing -> return state
           Just entry -> do
-            let (newState, _) = react state entry -- Ignore intents during replay
+            let (newState, _) = react state entry 
             replayLoop newState
   
   initialStateReplayed <- replayLoop (initialState :: ChatState)
@@ -165,16 +198,24 @@ main = do
         }
 
   -- 4. Fork the Runtime Loop
-  void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed
+  -- Pass the executor (Network Sender)
+  let executor = mkExecutor sock
+  void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed executor
 
   -- 5. Start Brick
   let initialUIReplayed = initialUI { _uiMessages = messages initialStateReplayed }
   vty <- VCP.mkVty V.defaultConfig
   void $ customMain vty (VCP.mkVty V.defaultConfig) (Just uiChan) (app reactorChan uiChan) initialUIReplayed
 
+
 -- | Specialized Runtime Loop that updates UI
-runChatRuntime :: RuntimeConfig FileJournal ChatEvent -> BChan.BChan AppEvent -> FileJournal -> ChatState -> IO ()
-runChatRuntime config uiChan journal startState = do
+runChatRuntime :: RuntimeConfig FileJournal ChatEvent 
+               -> BChan.BChan AppEvent 
+               -> FileJournal 
+               -> ChatState 
+               -> (OutputIntent -> IO ()) -- ^ The Executor
+               -> IO ()
+runChatRuntime config uiChan journal startState executor = do
     
     -- PUSH INITIAL STATE UPDATE IMMEDIATELY
     BChan.writeBChan uiChan (StateUpdate startState)
@@ -200,8 +241,8 @@ runChatRuntime config uiChan journal startState = do
                  let (newState, intents) = react state entry
                  appendFile "debug.log" $ "Runtime: New State msg count: " ++ show (length (messages newState)) ++ "\n"
                  
-                 -- Execute Intents (Stubbed network)
-                 mapM_ executeIntent intents
+                 -- Execute Intents (Real Network!)
+                 mapM_ executor intents
                  
                  -- Update UI
                  BChan.writeBChan uiChan (StateUpdate newState)
@@ -211,14 +252,9 @@ runChatRuntime config uiChan journal startState = do
     
     loop startState
 
-executeIntent :: OutputIntent -> IO ()
-executeIntent (SendPacket _bs) = do
-    -- Stub: In real world, send to TLS context
-    -- For now, simulate a response after 1s
-    void $ forkIO $ do
-        threadDelay 1000000 
-        -- We can't easily inject back into the stream here without a shared channel reference
-        -- in a robust design, the Network listener would push to the same 'reactorChan'
-        return ()
-executeIntent (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
-executeIntent _ = return ()
+mkExecutor :: Maybe Socket -> OutputIntent -> IO ()
+mkExecutor Nothing _ = return () -- Offline
+mkExecutor (Just sock) (SendPacket bs) = send sock bs
+mkExecutor _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
+mkExecutor _ _ = return ()
+
