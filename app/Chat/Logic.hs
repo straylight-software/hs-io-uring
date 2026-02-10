@@ -82,26 +82,25 @@ instance Reactor ChatState ChatEvent where
 -- ════════════════════════════════════════════════════════════════════════════
 
 handleUserInput :: ChatState -> Text -> (ChatState, [OutputIntent])
-handleUserInput state text =
-  let newMsg = Message "user" text
-      newState = state { messages = newMsg : messages state, status = "Thinking..." }
-      -- Generate intent to send packet AND query LLM
-      intents = [SendPacket (T.encodeUtf8 text), QueryLLM (T.unpack text)]
-  in (newState, intents)
+handleUserInput state text
+  | newMsg <- Message "user" text
+  , newState <- state { messages = newMsg : messages state, status = "Thinking..." }
+  , intents <- [SendPacket (T.encodeUtf8 text), QueryLLM (T.unpack text)]
+  = (newState, intents)
 
 handleNetReceived :: ChatState -> Text -> (ChatState, [OutputIntent])
-handleNetReceived state text =
-  let newMsg = Message "ai" text
-      newState = state { messages = newMsg : messages state, status = "Ready" }
-  in (newState, [])
+handleNetReceived state text
+  | newMsg <- Message "ai" text
+  , newState <- state { messages = newMsg : messages state, status = "Ready" }
+  = (newState, [])
 
 handleNetError :: ChatState -> String -> (ChatState, [OutputIntent])
-handleNetError state err =
-  let newState = state { status = T.pack ("Error: " ++ err) }
-  in (newState, [LogMessage ("Network Error: " ++ err)])
+handleNetError state err
+  | newState <- state { status = T.pack ("Error: " ++ err) }
+  = (newState, [LogMessage ("Network Error: " ++ err)])
 
 handleAICompletion :: ChatState -> Text -> (ChatState, [OutputIntent])
-handleAICompletion state text =
-  let newMsg = Message "ai" text
-      newState = state { messages = newMsg : messages state, status = "Ready" }
-  in (newState, [])
+handleAICompletion state text
+  | newMsg <- Message "ai" text
+  , newState <- state { messages = newMsg : messages state, status = "Ready" }
+  = (newState, [])

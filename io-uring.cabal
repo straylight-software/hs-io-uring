@@ -65,6 +65,7 @@ executable chat-client
   import:          lang
   main-is:         ChatClient.hs
   other-modules:   Chat.Logic
+               ,   Chat.OpenAI
   hs-source-dirs:  app
   build-depends:   io-uring
                  , brick

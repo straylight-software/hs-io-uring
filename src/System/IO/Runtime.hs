@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -38,7 +39,7 @@ data RuntimeConfig s e = RuntimeConfig
 --                                                               // main loop
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | The Main Loop.
+-- | The main loop.
 --
 -- This function drives the entire system. It is agnostic to the domain logic.
 runReactor
@@ -48,31 +49,29 @@ runReactor
   -> IO ()
 runReactor config initialR = do
   stateRef <- newIORef initialR
+  loop stateRef
 
-  let
-    loop = do
+  where
+    loop stateRef = do
       currentState <- readIORef stateRef
+      mEntry <- getNextEntry
+      processEntry stateRef currentState mEntry
 
-      -- Get next entry based on mode
-      mEntry <- case mode config of
-        Live -> pollLiveInput config
-        Replay -> next (stream config)
+    getNextEntry
+      | Live <- mode config = pollLiveInput config
+      | Replay <- mode config = next (stream config)
 
-      case mEntry of
-        Nothing -> return () -- Exit loop or idle
-        Just entry -> do
-          -- Pure Transition
-          let (newState, intents) = react currentState entry
+    processEntry _ _ Nothing = pure ()  -- exit loop or idle
+    processEntry stateRef currentState (Just entry)
+      | (newState, intents) <- react currentState entry
+      = do
+        executeOrVerify intents
+        writeIORef stateRef newState
+        loop stateRef
 
-          -- Execute Side Effects
-          case mode config of
-            Live -> executeIntents intents
-            Replay -> verifyIntents intents
-
-          writeIORef stateRef newState
-          loop
-
-  loop
+    executeOrVerify intents
+      | Live <- mode config = executeIntents intents
+      | Replay <- mode config = verifyIntents intents
 
 -- ════════════════════════════════════════════════════════════════════════════
 --                                                                  // helpers
@@ -84,32 +83,24 @@ pollLiveInput
   -> IO (Maybe (Entry e))
 pollLiveInput config = do
   mEvent <- tick config
-  case mEvent of
-    Nothing -> return Nothing
-    Just evt -> do
-      -- Construct Entry
-      -- TODO: Use real timestamp and sequence ID
-      let
-        entry = Entry
-          { sequenceId = 0
-          , timestamp = 0
-          , checksum = 0
-          , event = evt
-          }
-      -- Persist to Log
-      append (stream config) entry
-      return (Just entry)
+  wrapAndPersist mEvent
+  where
+    wrapAndPersist Nothing = pure Nothing
+    -- TODO[b7r6]: use real timestamp and sequence id
+    wrapAndPersist (Just evt)
+      | entry <- Entry { sequenceId = 0, timestamp = 0, checksum = 0, event = evt }
+      = do
+        append (stream config) entry  -- persist to log
+        pure (Just entry)
 
 executeIntents :: [OutputIntent] -> IO ()
-executeIntents intents = forM_ intents $ \intent -> do
-  case intent of
-    LogMessage msg -> putStrLn $ "[LIVE] Log: " ++ msg
-    SendPacket _ -> putStrLn "[LIVE] Sending Packet..."
-    WriteFile path _ -> putStrLn $ "[LIVE] Writing file: " ++ path
-    QueryLLM _ -> putStrLn "[LIVE] Querying LLM..."
+executeIntents intents = forM_ intents $ \case
+  LogMessage msg -> putStrLn $ "[LIVE] Log: " ++ msg
+  SendPacket _ -> putStrLn "[LIVE] Sending Packet..."
+  WriteFile path _ -> putStrLn $ "[LIVE] Writing file: " ++ path
+  QueryLLM _ -> putStrLn "[LIVE] Querying LLM..."
 
 verifyIntents :: [OutputIntent] -> IO ()
-verifyIntents intents = forM_ intents $ \intent -> do
-  case intent of
-    LogMessage msg -> putStrLn $ "[REPLAY] Log: " ++ msg
-    _ -> return ()
+verifyIntents intents = forM_ intents $ \case
+  LogMessage msg -> putStrLn $ "[REPLAY] Log: " ++ msg
+  _ -> pure ()

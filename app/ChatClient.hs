@@ -1,3 +1,4 @@
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -25,10 +26,11 @@ import Brick.Widgets.Center qualified as C
 import Brick.Widgets.Core (padAll, padLeftRight, strWrap, txt, vBox)
 import Brick.Widgets.Edit qualified as E
 import Chat.Logic
-  ( ChatEvent (NetError, NetReceived, UserInput)
+  ( ChatEvent (AICompletion, NetError, NetReceived, UserInput)
   , ChatState (messages, status)
   , Message (Message)
   )
+import Chat.OpenAI qualified as OpenAI
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Exception (SomeException, try)
 import Control.Monad (forever, void)
@@ -42,6 +44,7 @@ import Lens.Micro ((^.))
 import Lens.Micro.Mtl (zoom, (.=))
 import Lens.Micro.TH (makeLenses)
 import Network.Simple.TCP (Socket, connect, recv, send)
+import System.Environment (lookupEnv)
 import System.IO (IOMode (ReadWriteMode))
 import System.IO.EventStream
   ( Entry (Entry)
@@ -93,9 +96,9 @@ drawUI st = [ui]
 
     msgList = C.centerLayer $ vBox $ map drawMsg (reverse $ st ^. uiMessages)
 
-    drawMsg (Message role content) =
-      let prefix = if role == "user" then "You: " else "AI: "
-      in  padLeftRight 1 $ strWrap (prefix ++ T.unpack content)
+    drawMsg (Message role content)
+      | prefix <- if role == "user" then "You: " else "AI: "
+      = padLeftRight 1 $ strWrap (prefix ++ T.unpack content)
 
     inputArea = padAll 1 $ E.renderEditor (txt . T.unlines) True (st ^. uiEditor)
 
@@ -116,21 +119,18 @@ appEvent _ _ (AppEvent (StateUpdate newState)) = do
 
 appEvent reactorChan _ (VtyEvent (V.EvKey V.KEnter [])) = do
   st <- get
-  let content = T.unlines $ E.getEditContents (st ^. uiEditor)
-  if T.null (T.strip content)
-    then return ()
+  let content = T.strip $ T.unlines $ E.getEditContents (st ^. uiEditor)
+  if T.null content
+    then pure ()
     else do
-      -- Push event to Reactor Channel
-      liftIO $ BChan.writeBChan reactorChan (UserInput (T.strip content))
+      liftIO $ BChan.writeBChan reactorChan (UserInput content)
       uiEditor .= E.editor () (Just 1) ""
 
-appEvent _ _ (VtyEvent (V.EvKey V.KEsc [])) = do
-  halt
+appEvent _ _ (VtyEvent (V.EvKey V.KEsc [])) = halt
 
-appEvent _ _ (VtyEvent e) = do
-  zoom uiEditor $ E.handleEditorEvent (VtyEvent e)
+appEvent _ _ (VtyEvent e) = zoom uiEditor $ E.handleEditorEvent (VtyEvent e)
 
-appEvent _ _ _ = return ()
+appEvent _ _ _ = pure ()
 
 initialUI :: UIState
 initialUI = UIState
@@ -147,7 +147,7 @@ app reactorChan uiChan = App
   { appDraw = drawUI
   , appChooseCursor = showFirstCursor
   , appHandleEvent = appEvent reactorChan uiChan
-  , appStartEvent = return ()
+  , appStartEvent = pure ()
   , appAttrMap = const theMap
   }
 
@@ -157,143 +157,137 @@ app reactorChan uiChan = App
 
 main :: IO ()
 main = do
-  -- 1. Setup Channels
-  -- uiChan: For Reactor -> UI updates (AppEvent)
-  uiChan <- BChan.newBChan 10
-  -- reactorChan: For UI -> Reactor inputs (ChatEvent)
-  reactorChan <- BChan.newBChan 10
+  -- setup channels
+  uiChan <- BChan.newBChan 10       -- reactor -> ui updates
+  reactorChan <- BChan.newBChan 10  -- ui -> reactor inputs
 
-  -- 2. Open Journal
+  -- load openrouter client
+  mApiKey <- lookupEnv "OPENROUTER_API_KEY"
+  let openaiClient = OpenAI.mkClient . T.pack <$> mApiKey
+
+  -- open journal
   journal <- openJournal "chat.journal" ReadWriteMode
 
-  -- 3. Network Setup (Try to connect)
-  appendFile "debug.log" "Main: Attempting connection...\n"
-  connResult <- try $ connect "127.0.0.1" "8080" $ \(sock, remoteAddr) -> do
-    appendFile "debug.log" $ "Main: Connected to " ++ show remoteAddr ++ "\n"
+  -- network setup (try to connect)
+  connResult <- try $ connect "127.0.0.1" "8080" $ \(sock, remoteAddr) ->
+    runWithSocket sock remoteAddr uiChan reactorChan journal openaiClient
 
-    -- 3.1 Spawn Input Pump
-    inputPumpId <- forkIO $ forever $ do
+  -- handle connection result
+  handleConnectionResult connResult uiChan reactorChan journal openaiClient
+
+  where
+    runWithSocket sock _remoteAddr uiChan reactorChan journal openaiClient = do
+      inputPumpId <- forkIO $ inputPump sock reactorChan
+      runAppWithNetwork (Just sock) openaiClient uiChan reactorChan journal
+      killThread inputPumpId
+
+    inputPump sock reactorChan = forever $ do
       msg <- recv sock 4096
-      case msg of
-        Nothing -> do
-          appendFile "debug.log" "Main: Socket EOF\n"
-          BChan.writeBChan reactorChan (NetError "Connection Closed")
-          threadDelay 10_000_000
-          error "Socket EOF"
-        Just bs -> do
-          appendFile "debug.log" $ "Main: Recv bytes: " ++ show bs ++ "\n"
-          BChan.writeBChan reactorChan (NetReceived (T.decodeUtf8 bs))
+      handleReceivedMessage msg reactorChan
 
-    runAppWithNetwork (Just sock) uiChan reactorChan journal
+    handleReceivedMessage Nothing reactorChan = do
+      BChan.writeBChan reactorChan (NetError "Connection Closed")
+      threadDelay 10_000_000
+      error "Socket EOF"
+    handleReceivedMessage (Just bs) reactorChan =
+      BChan.writeBChan reactorChan (NetReceived (T.decodeUtf8 bs))
 
-    -- Cleanup
-    killThread inputPumpId
-
-  case connResult of
-    Left (e :: SomeException) -> do
-      appendFile "debug.log" $ "Main: Connection failed: " ++ show e ++ "\n"
-      runAppWithNetwork Nothing uiChan reactorChan journal
-    Right _ -> return ()
+    handleConnectionResult (Left (_e :: SomeException)) uiChan reactorChan journal openaiClient =
+      runAppWithNetwork Nothing openaiClient uiChan reactorChan journal
+    handleConnectionResult (Right _) _ _ _ _ = pure ()
 
 runAppWithNetwork
   :: Maybe Socket
+  -> Maybe OpenAI.OpenAIClient
   -> BChan.BChan AppEvent
   -> BChan.BChan ChatEvent
   -> FileJournal
   -> IO ()
-runAppWithNetwork sock uiChan reactorChan journal = do
-  -- 2.5 Replay History
+runAppWithNetwork sock openaiClient uiChan reactorChan journal = do
+  -- replay history
   putStrLn "Replaying journal..."
-  let
-    replayLoop state = do
-      mEntry <- next journal
-      case mEntry of
-        Nothing -> return state
-        Just entry -> do
-          let (newState, _) = react state entry
-          replayLoop newState
-
   initialStateReplayed <- replayLoop (initialState :: ChatState)
   putStrLn $ "Replay complete. Messages: " ++ show (length (messages initialStateReplayed))
 
-  -- 3. Configure Runtime
-  -- The 'tick' function pulls from the reactorChan (UI inputs)
-  let
+  -- fork the runtime loop
+  void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed executor
+
+  -- start brick
+  let initialUIReplayed = initialUI { _uiMessages = messages initialStateReplayed }
+  vty <- VCP.mkVty V.defaultConfig
+  void $ customMain vty (VCP.mkVty V.defaultConfig) (Just uiChan) (app reactorChan uiChan) initialUIReplayed
+
+  where
+    replayLoop state = do
+      mEntry <- next journal
+      replayEntry state mEntry
+
+    replayEntry state Nothing = pure state
+    replayEntry state (Just entry)
+      | (newState, _) <- react state entry
+      = replayLoop newState
+
     tickFunc = do
       evt <- BChan.readBChan reactorChan
-      return (Just evt)
+      pure (Just evt)
 
-  let
     config = RuntimeConfig
       { mode = Live
       , stream = journal
       , tick = tickFunc
       }
 
-  -- 4. Fork the Runtime Loop
-  -- Pass the executor (Network Sender + LLM)
-  let executor = mkExecutor sock reactorChan
-  void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed executor
+    executor = mkExecutor sock openaiClient reactorChan
 
-  -- 5. Start Brick
-  let initialUIReplayed = initialUI { _uiMessages = messages initialStateReplayed }
-  vty <- VCP.mkVty V.defaultConfig
-  void $ customMain vty (VCP.mkVty V.defaultConfig) (Just uiChan) (app reactorChan uiChan) initialUIReplayed
-
--- | Specialized Runtime Loop that updates UI.
+-- | Specialized runtime loop that updates UI.
 runChatRuntime
   :: RuntimeConfig FileJournal ChatEvent
   -> BChan.BChan AppEvent
   -> FileJournal
   -> ChatState
-  -> (OutputIntent -> IO ()) -- ^ The Executor
+  -> (OutputIntent -> IO ())  -- executor
   -> IO ()
 runChatRuntime config uiChan journal startState executor = do
-
-  -- PUSH INITIAL STATE UPDATE IMMEDIATELY
+  -- push initial state update immediately
   BChan.writeBChan uiChan (StateUpdate startState)
-  appendFile "debug.log" "Runtime: Started loop\n"
-
-  let
-    loop state = do
-      -- Poll Input
-      appendFile "debug.log" "Runtime: Waiting for tick...\n"
-      mEvent <- tick config
-      case mEvent of
-        Nothing -> do
-          appendFile "debug.log" "Runtime: Tick returned Nothing\n"
-          loop state
-        Just evt -> do
-          appendFile "debug.log" $ "Runtime: Got event: " ++ show evt ++ "\n"
-
-          -- Persist
-          let entry = Entry 0 0 0 evt
-          append journal entry
-          appendFile "debug.log" "Runtime: Persisted to journal\n"
-
-          -- React
-          let (newState, intents) = react state entry
-          appendFile "debug.log" $ "Runtime: New State msg count: " ++ show (length (messages newState)) ++ "\n"
-
-          -- Execute Intents (Real Network!)
-          mapM_ executor intents
-
-          -- Update UI
-          BChan.writeBChan uiChan (StateUpdate newState)
-          appendFile "debug.log" "Runtime: Pushed UI update\n"
-
-          loop newState
-
   loop startState
 
-mkExecutor :: Maybe Socket -> BChan.BChan ChatEvent -> OutputIntent -> IO ()
-mkExecutor _ reactorChan (QueryLLM prompt) = void $ forkIO $ do
-  -- Dead Simple LLM Mock
-  threadDelay 1_500_000
-  let response = T.pack $ "I am a Replay-aware AI. You said: " ++ prompt
-  liftIO $ BChan.writeBChan reactorChan (NetReceived response)
+  where
+    loop state = do
+      mEvent <- tick config
+      processEvent state mEvent
 
-mkExecutor Nothing _ _ = return () -- Offline
-mkExecutor (Just sock) _ (SendPacket bs) = send sock bs
-mkExecutor _ _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
-mkExecutor _ _ _ = return ()
+    processEvent state Nothing = loop state
+    processEvent state (Just evt)
+      | entry <- Entry 0 0 0 evt
+      , (newState, intents) <- react state entry
+      = do
+        append journal entry
+        mapM_ executor intents
+        BChan.writeBChan uiChan (StateUpdate newState)
+        loop newState
+
+mkExecutor
+  :: Maybe Socket
+  -> Maybe OpenAI.OpenAIClient
+  -> BChan.BChan ChatEvent
+  -> OutputIntent
+  -> IO ()
+mkExecutor _ (Just client) reactorChan (QueryLLM prompt) = void $ forkIO $ do
+  -- call openrouter api
+  let openaiMessages = [OpenAI.ChatMessage "user" (T.pack prompt)]
+  result <- OpenAI.complete client openaiMessages
+  case result of
+    Left err -> BChan.writeBChan reactorChan (AICompletion $ "Error: " <> err)
+    Right response -> BChan.writeBChan reactorChan (AICompletion response)
+
+mkExecutor _ Nothing reactorChan (QueryLLM prompt) = void $ forkIO $ do
+  -- fallback mock when no api key
+  threadDelay 1_500_000
+  let response = T.pack $ "[Mock] No OPENAI_API_KEY set. You said: " ++ prompt
+  BChan.writeBChan reactorChan (AICompletion response)
+
+mkExecutor Nothing _ _ _ = pure ()  -- offline
+mkExecutor (Just sock) _ _ (SendPacket bs) = send sock bs
+mkExecutor _ _ _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
+mkExecutor _ _ _ _ = pure ()

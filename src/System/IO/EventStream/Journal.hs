@@ -47,13 +47,14 @@ data FileJournal = FileJournal
 -- ════════════════════════════════════════════════════════════════════════════
 
 openJournal :: FilePath -> IOMode -> IO FileJournal
-openJournal path mode = do
-  h <- openBinaryFile path mode
-  -- If appending, ensure we are at the end
-  case mode of
-    AppendMode -> hSeek h SeekFromEnd 0
-    _ -> return ()
-  return $ FileJournal h path
+openJournal path ioMode = do
+  handle <- openBinaryFile path ioMode
+  -- if appending, ensure we are at the end
+  seekToEndIfAppending handle ioMode
+  pure $ FileJournal handle path
+  where
+    seekToEndIfAppending h AppendMode = hSeek h SeekFromEnd 0
+    seekToEndIfAppending _ _ = pure ()
 
 -- ════════════════════════════════════════════════════════════════════════════
 --                                                             // implementation
@@ -74,22 +75,26 @@ instance EventStream FileJournal where
     -- For correctness/reproducibility safety, we flush.
     hFlush h
 
-  next (FileJournal h _) = do
-    eof <- hIsEOF h
-    if eof
-      then return Nothing
-      else do
-        -- Read Length (4 bytes)
-        lenBytes <- BS.hGet h 4
-        if BS.length lenBytes < 4
-          then return Nothing -- Unexpected EOF
-          else do
-            let len = runGet getWord32le (LBS.fromStrict lenBytes)
-            -- Read Payload
-            payload <- LBS.hGet h (fromIntegral len)
-            if LBS.length payload < fromIntegral len
-              then return Nothing -- Unexpected EOF or corruption
-              else return (Just (decode payload))
+  next (FileJournal h _) = readNextEntry
+    where
+      readNextEntry = do
+        eof <- hIsEOF h
+        if eof then pure Nothing else readFramedEntry
+
+      readFramedEntry = do
+        lenBytes <- BS.hGet h 4  -- read length (4 bytes)
+        readPayloadIfValid lenBytes
+
+      readPayloadIfValid lenBytes
+        | BS.length lenBytes < 4 = pure Nothing  -- unexpected eof
+        | len <- runGet getWord32le (LBS.fromStrict lenBytes)
+        = do
+          payload <- LBS.hGet h (fromIntegral len)
+          decodePayloadIfComplete len payload
+
+      decodePayloadIfComplete len payload
+        | LBS.length payload < fromIntegral len = pure Nothing  -- corruption
+        | otherwise = pure (Just (decode payload))
 
   flush (FileJournal h _) = hFlush h
 
