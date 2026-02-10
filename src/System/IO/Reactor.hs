@@ -17,6 +17,7 @@ data OutputIntent
   = SendPacket !ByteString
   | WriteFile !FilePath !ByteString
   | LogMessage !String
+  | QueryLLM !String          -- ^ Request an LLM completion
   deriving (Show, Eq)
 
 -- | The Reactor Interface

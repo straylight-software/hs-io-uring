@@ -10,7 +10,7 @@ import System.IO.EventStream
   , StreamMode(Live, Replay)
   , Entry(Entry, sequenceId, timestamp, checksum, event)
   )
-import System.IO.Reactor (Reactor(react), OutputIntent(LogMessage, SendPacket, WriteFile))
+import System.IO.Reactor (Reactor(react), OutputIntent(LogMessage, SendPacket, WriteFile, QueryLLM))
 import Data.Binary (Binary)
 import Control.Monad (forM_)
 import Data.IORef (newIORef, readIORef, writeIORef)
@@ -78,6 +78,7 @@ executeIntents intents = forM_ intents $ \intent -> do
     LogMessage msg -> putStrLn $ "[LIVE] Log: " ++ msg
     SendPacket _ -> putStrLn "[LIVE] Sending Packet..."
     WriteFile path _ -> putStrLn $ "[LIVE] Writing file: " ++ path
+    QueryLLM _ -> putStrLn "[LIVE] Querying LLM..."
 
 verifyIntents :: [OutputIntent] -> IO ()
 verifyIntents intents = forM_ intents $ \intent -> do

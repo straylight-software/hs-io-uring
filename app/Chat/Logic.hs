@@ -13,7 +13,7 @@ import Data.Binary (Binary)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import System.IO.Reactor (Reactor(react, initialState, snapshot), OutputIntent(SendPacket, LogMessage))
+import System.IO.Reactor (Reactor(react, initialState, snapshot), OutputIntent(SendPacket, LogMessage, QueryLLM))
 import System.IO.EventStream (Entry(event))
 
 -- | Domain Events
@@ -21,6 +21,7 @@ data ChatEvent
   = UserInput Text        -- ^ User typed text
   | NetReceived Text      -- ^ Network received text
   | NetError String       -- ^ Network error
+  | AICompletion Text     -- ^ LLM generated text
   deriving (Show, Eq, Generic)
 
 instance Binary ChatEvent
@@ -46,9 +47,9 @@ instance Reactor ChatState ChatEvent where
   react state entry = case event entry of
     UserInput text ->
       let newMsg = Message "user" text
-          newState = state { messages = newMsg : messages state, status = "Sending..." }
-          -- Generate intent to send packet
-          intents = [SendPacket (T.encodeUtf8 text)]
+          newState = state { messages = newMsg : messages state, status = "Thinking..." }
+          -- Generate intent to send packet AND query LLM
+          intents = [SendPacket (T.encodeUtf8 text), QueryLLM (T.unpack text)]
       in (newState, intents)
 
     NetReceived text ->
@@ -59,5 +60,10 @@ instance Reactor ChatState ChatEvent where
     NetError err ->
       let newState = state { status = T.pack ("Error: " ++ err) }
       in (newState, [LogMessage ("Network Error: " ++ err)])
+
+    AICompletion text ->
+      let newMsg = Message "ai" text
+          newState = state { messages = newMsg : messages state, status = "Ready" }
+      in (newState, [])
 
   snapshot _ = "" -- TODO: Implement serialization

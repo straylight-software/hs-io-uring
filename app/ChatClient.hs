@@ -42,7 +42,7 @@ import System.IO.EventStream
   , EventStream(append, next)
   )
 import System.IO.EventStream.Journal (openJournal, FileJournal)
-import System.IO.Reactor (Reactor(react, initialState), OutputIntent(SendPacket, LogMessage))
+import System.IO.Reactor (Reactor(react, initialState), OutputIntent(SendPacket, LogMessage, QueryLLM))
 import System.IO.Runtime (RuntimeConfig(RuntimeConfig, mode, stream, tick))
 import System.IO (IOMode(ReadWriteMode))
 import Chat.Logic 
@@ -198,8 +198,8 @@ runAppWithNetwork sock uiChan reactorChan journal = do
         }
 
   -- 4. Fork the Runtime Loop
-  -- Pass the executor (Network Sender)
-  let executor = mkExecutor sock
+  -- Pass the executor (Network Sender + LLM)
+  let executor = mkExecutor sock reactorChan
   void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed executor
 
   -- 5. Start Brick
@@ -252,9 +252,15 @@ runChatRuntime config uiChan journal startState executor = do
     
     loop startState
 
-mkExecutor :: Maybe Socket -> OutputIntent -> IO ()
-mkExecutor Nothing _ = return () -- Offline
-mkExecutor (Just sock) (SendPacket bs) = send sock bs
-mkExecutor _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
-mkExecutor _ _ = return ()
+mkExecutor :: Maybe Socket -> BChan.BChan ChatEvent -> OutputIntent -> IO ()
+mkExecutor _ reactorChan (QueryLLM prompt) = void $ forkIO $ do
+    -- Dead Simple LLM Mock
+    threadDelay 1500000 
+    let response = T.pack $ "I am a Replay-aware AI. You said: " ++ prompt
+    liftIO $ BChan.writeBChan reactorChan (NetReceived response)
+
+mkExecutor Nothing _ _ = return () -- Offline
+mkExecutor (Just sock) _ (SendPacket bs) = send sock bs
+mkExecutor _ _ (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
+mkExecutor _ _ _ = return ()
 
