@@ -8,3 +8,5 @@ result
 /app/Debug.o
 /src/System/IO/Engine/Types.o
 /src/System/IO/Engine/Types.hi
+debug.log
+chat.journal

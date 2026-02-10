@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Main where
 
@@ -12,6 +11,8 @@ import Brick
   , Widget
   , customMain
   , showFirstCursor
+  , get
+  , halt
   )
 import Brick.Widgets.Core (vBox, txt, padAll, padLeftRight, strWrap)
 import qualified Brick.Widgets.Center as C
@@ -20,66 +21,53 @@ import qualified Brick.Widgets.Edit as E
 import qualified Brick.AttrMap as A
 import qualified Graphics.Vty as V
 import qualified Graphics.Vty.CrossPlatform as VCP
-import Lens.Micro ((^.), (.~), (&), (%~))
-import Lens.Micro.TH (makeLenses)
-import Lens.Micro.Mtl (zoom)
 import qualified Brick.BChan as BChan
-import Data.Text (Text)
-import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text
-import Control.Monad (void, forever)
-import Control.Monad.State (put, get)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (void)
 import Control.Monad.IO.Class (liftIO)
-import Control.Concurrent (forkIO)
-import Control.Exception (catch, SomeException, displayException, finally, bracket)
-import Control.Concurrent.STM (TChan, newTChanIO, readTChan, writeTChan, atomically)
+import Data.Text (Text)
+import qualified Data.Text as T
+-- import qualified Data.Text.Encoding as T
+import Lens.Micro ((^.))
+import Lens.Micro.TH (makeLenses)
+import Lens.Micro.Mtl (zoom, (.=))
 
--- Network & Engine Imports
-import qualified Network.Socket as Net
-import Network.TLS ()
-import qualified Network.TLS as TLS
-import qualified Network.TLS.Extra.Cipher as TLS
-import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Unsafe as BSU
-import qualified Data.Default.Class as Def
-import qualified Network.TLS.SessionManager as TLS
-import System.X509 (getSystemCertificateStore)
-import Foreign.Ptr (castPtr, plusPtr)
-import Foreign.Marshal.Alloc (mallocBytes, free)
-import System.IO.Engine.Types
-  ( Engine(submit)
-  , Request(Read, Write, Connect, Close)
+-- Reactor Imports
+import System.IO.EventStream 
+  ( StreamMode(Live)
+  , Entry(Entry)
+  , EventStream(append, next)
   )
-import System.IO.Engine.URing (makeURingEngine)
-import Control.Concurrent.Async (wait)
-import Data.Word ()
-import System.Posix.Types (Fd(Fd))
+import System.IO.EventStream.Journal (openJournal, FileJournal)
+import System.IO.Reactor (Reactor(react, initialState), OutputIntent(SendPacket, LogMessage))
+import System.IO.Runtime (RuntimeConfig(RuntimeConfig, mode, stream, tick))
+import System.IO (IOMode(ReadWriteMode))
+import Chat.Logic 
+  ( ChatState(messages, status)
+  , ChatEvent(UserInput)
+  , Message(Message)
+  )
 
--- Types
-
-data Message = Message
-  { _msgRole :: Text
-  , _msgContent :: Text
-  } deriving (Show, Eq)
-
-data St = St
-  { _stMessages :: [Message]
-  , _stEditor   :: E.Editor Text ()
-  , _stStatus   :: Text
-  , _stOutChan  :: TChan Text
+-- | UI State (Ephemeral, Visual only)
+-- The "Real" state is in the Reactor, but we need a view model for Brick
+data UIState = UIState
+  { _uiMessages :: [Message]
+  , _uiEditor   :: E.Editor Text ()
+  , _uiStatus   :: Text
   }
 
-makeLenses ''St
+makeLenses ''UIState
 
-data Event = NewMessage Message | ErrorMsg Text
+-- | Brick Event Wrapper
+data AppEvent 
+  = StateUpdate ChatState -- ^ Reactor pushed a new state
+  -- | ReactEvent ChatEvent  -- ^ UI wants to push an event to Reactor (Removed, now direct BChan write)
 
--- TUI
-
-drawUI :: St -> [Widget ()]
+-- | The Brick App Definition
+drawUI :: UIState -> [Widget ()]
 drawUI st = [ui]
   where
-    ui = C.center $ B.borderWithLabel (txt " Baseten Chat ") $
+    ui = C.center $ B.borderWithLabel (txt " Aleph Chat (Replay Architecture) ") $
          vBox [ msgList
               , B.hBorder
               , inputArea
@@ -87,179 +75,150 @@ drawUI st = [ui]
               , statusBar
               ]
     
-    msgList = C.centerLayer $ vBox $ map drawMsg (reverse $ st ^. stMessages)
+    msgList = C.centerLayer $ vBox $ map drawMsg (reverse $ st ^. uiMessages)
     
     drawMsg (Message role content) = 
       let prefix = if role == "user" then "You: " else "AI: "
-      in padLeftRight 1 $ strWrap (prefix ++ Text.unpack content)
+      in padLeftRight 1 $ strWrap (prefix ++ T.unpack content)
 
-    inputArea = padAll 1 $ E.renderEditor (txt . Text.unlines) True (st ^. stEditor)
+    inputArea = padAll 1 $ E.renderEditor (txt . T.unlines) True (st ^. uiEditor)
     
-    statusBar = padLeftRight 1 $ txt (st ^. stStatus)
+    statusBar = padLeftRight 1 $ txt (st ^. uiStatus)
 
-appEvent :: BrickEvent () Event -> EventM () St ()
-appEvent (AppEvent (NewMessage msg)) = 
-  put . (\st -> st & stMessages %~ (msg :) & stStatus .~ "Ready") =<< get
-appEvent (AppEvent (ErrorMsg err)) =
-  put . (\st -> st & stStatus .~ ("Error: " <> err)) =<< get
-appEvent (VtyEvent (V.EvKey V.KEnter [])) = do
+appEvent :: BChan.BChan ChatEvent -> BChan.BChan AppEvent -> BrickEvent () AppEvent -> EventM () UIState ()
+appEvent _ _ (AppEvent (StateUpdate newState)) = do
+    uiMessages .= messages newState
+    uiStatus .= status newState
+
+appEvent reactorChan _ (VtyEvent (V.EvKey V.KEnter [])) = do
   st <- get
-  let content = Text.unlines $ E.getEditContents (st ^. stEditor)
-  if Text.null (Text.strip content)
+  let content = T.unlines $ E.getEditContents (st ^. uiEditor)
+  if T.null (T.strip content)
     then return ()
     else do
-      -- Send message logic would go here
-      let userMsg = Message "user" (Text.strip content)
-      put $ st & stMessages %~ (userMsg :) 
-               & stEditor .~ E.editor () (Just 1) ""
-      -- Send to network
-      liftIO $ atomically $ writeTChan (st ^. stOutChan) (Text.strip content)
-appEvent (VtyEvent e) = do
-  zoom stEditor $ E.handleEditorEvent (VtyEvent e)
-appEvent _ = return ()
+      -- Push event to Reactor Channel
+      liftIO $ BChan.writeBChan reactorChan (UserInput (T.strip content))
+      uiEditor .= E.editor () (Just 1) ""
 
-initialState :: TChan Text -> St
-initialState ch = St
-  { _stMessages = []
-  , _stEditor = E.editor () (Just 1) ""
-  , _stStatus = "Ready"
-  , _stOutChan = ch
+appEvent _ _ (VtyEvent (V.EvKey V.KEsc [])) = do
+    halt
+
+appEvent _ _ (VtyEvent e) = do
+  zoom uiEditor $ E.handleEditorEvent (VtyEvent e)
+
+appEvent _ _ _ = return ()
+
+initialUI :: UIState
+initialUI = UIState
+  { _uiMessages = []
+  , _uiEditor = E.editor () (Just 1) ""
+  , _uiStatus = "Initializing..."
   }
 
 theMap :: A.AttrMap
 theMap = A.attrMap V.defAttr []
 
-app :: App St Event ()
-app = App
+app :: BChan.BChan ChatEvent -> BChan.BChan AppEvent -> App UIState AppEvent ()
+app reactorChan uiChan = App
   { appDraw = drawUI
   , appChooseCursor = showFirstCursor
-  , appHandleEvent = appEvent
+  , appHandleEvent = appEvent reactorChan uiChan
   , appStartEvent = return ()
   , appAttrMap = const theMap
   }
 
--- Main
-
 main :: IO ()
 main = do
-  chan <- BChan.newBChan 10
-  outChan <- newTChanIO
+  -- 1. Setup Channels
+  -- uiChan: For Reactor -> UI updates (AppEvent)
+  uiChan <- BChan.newBChan 10
+  -- reactorChan: For UI -> Reactor inputs (ChatEvent)
+  reactorChan <- BChan.newBChan 10 
+
+  -- 2. Open Journal
+  journal <- openJournal "chat.journal" ReadWriteMode
+
+  -- 2.5 Replay History
+  -- We need to replay the journal to get the initial state
+  putStrLn "Replaying journal..."
+  let replayLoop state = do
+        mEntry <- next journal
+        case mEntry of
+          Nothing -> return state
+          Just entry -> do
+            let (newState, _) = react state entry -- Ignore intents during replay
+            replayLoop newState
   
-  -- Start the Engine-powered Network Loop
-  void $ forkIO $ networkLoop chan outChan
+  initialStateReplayed <- replayLoop (initialState :: ChatState)
+  putStrLn $ "Replay complete. Messages: " ++ show (length (messages initialStateReplayed))
 
+  -- 3. Configure Runtime
+  -- The 'tick' function pulls from the reactorChan (UI inputs)
+  let tickFunc = do
+        evt <- BChan.readBChan reactorChan
+        return (Just evt)
+
+  let config = RuntimeConfig
+        { mode = Live
+        , stream = journal
+        , tick = tickFunc
+        }
+
+  -- 4. Fork the Runtime Loop
+  void $ forkIO $ runChatRuntime config uiChan journal initialStateReplayed
+
+  -- 5. Start Brick
+  let initialUIReplayed = initialUI { _uiMessages = messages initialStateReplayed }
   vty <- VCP.mkVty V.defaultConfig
-  void $ customMain vty (VCP.mkVty V.defaultConfig) (Just chan) app (initialState outChan)
+  void $ customMain vty (VCP.mkVty V.defaultConfig) (Just uiChan) (app reactorChan uiChan) initialUIReplayed
 
--- Network Logic using System.IO.Engine
-networkLoop :: BChan.BChan Event -> TChan Text -> IO ()
-networkLoop chan outChan = handleErrors $ do
-    -- 1. Initialize the Engine (Posix for now, swap to URing later)
-    engine <- makeURingEngine
+-- | Specialized Runtime Loop that updates UI
+runChatRuntime :: RuntimeConfig FileJournal ChatEvent -> BChan.BChan AppEvent -> FileJournal -> ChatState -> IO ()
+runChatRuntime config uiChan journal startState = do
     
-    -- 2. Resolve Host (Baseten / Httpbin)
-    -- Using httpbin for echo test, port 443 for TLS
-    let host = "httpbin.org"
-        port = "443"
+    -- PUSH INITIAL STATE UPDATE IMMEDIATELY
+    BChan.writeBChan uiChan (StateUpdate startState)
+    appendFile "debug.log" "Runtime: Started loop\n"
+
+    let loop state = do
+          -- Poll Input
+          appendFile "debug.log" "Runtime: Waiting for tick...\n"
+          mEvent <- tick config
+          case mEvent of
+             Nothing -> do
+                 appendFile "debug.log" "Runtime: Tick returned Nothing\n"
+                 loop state
+             Just evt -> do
+                 appendFile "debug.log" $ "Runtime: Got event: " ++ show evt ++ "\n"
+                 
+                 -- Persist
+                 let entry = Entry 0 0 0 evt
+                 append journal entry
+                 appendFile "debug.log" "Runtime: Persisted to journal\n"
+                 
+                 -- React
+                 let (newState, intents) = react state entry
+                 appendFile "debug.log" $ "Runtime: New State msg count: " ++ show (length (messages newState)) ++ "\n"
+                 
+                 -- Execute Intents (Stubbed network)
+                 mapM_ executeIntent intents
+                 
+                 -- Update UI
+                 BChan.writeBChan uiChan (StateUpdate newState)
+                 appendFile "debug.log" "Runtime: Pushed UI update\n"
+                 
+                 loop newState
     
-    addrInfo:_ <- Net.getAddrInfo (Just Net.defaultHints) (Just host) (Just port)
-    let addr = Net.addrAddress addrInfo
-        family = Net.addrFamily addrInfo
-        proto = Net.addrProtocol addrInfo
-        sockType = Net.addrSocketType addrInfo
+    loop startState
 
-    -- 3. Create Socket via Engine (Using bare socket for now to get Fd)
-    -- Note: Our Engine abstraction has Connect but not Socket creation yet in the Request type
-    -- (The Request type has Accept/Connect taking Fd). 
-    -- So we create socket via GHC/Network, then handover.
-    sock <- Net.socket family sockType proto
-    fd <- Fd <$> Net.socketToFd sock
-    
-    flip finally (Net.close sock) $ do
-        -- 4. Connect via Engine
-        ticket <- submit engine (Connect fd addr)
-        wait ticket
-        
-        let backend = makeBackend engine fd
-        
-        params <- do
-            sm <- TLS.newSessionManager TLS.defaultConfig
-            certStore <- getSystemCertificateStore
-            return $ (TLS.defaultParamsClient host "")
-                { TLS.clientShared = Def.def 
-                    { TLS.sharedSessionManager = sm 
-                    , TLS.sharedCAStore = certStore
-                    }
-                , TLS.clientSupported = Def.def { TLS.supportedCiphers = TLS.ciphersuite_default }
-                }
-        
-        ctx <- TLS.contextNew backend params
-        TLS.handshake ctx
-        
-        -- 6. Send Initial Request (HTTP POST)
-        let req = "POST /post HTTP/1.1\r\n" <>
-                  "Host: " <> BSC.pack host <> "\r\n" <>
-                  "Content-Type: text/plain\r\n" <>
-                  "Content-Length: 12\r\n" <>
-                  "Connection: keep-alive\r\n\r\n" <>
-                  "Hello Engine"
-        
-        TLS.sendData ctx (LBS.fromStrict $ BSC.concat [req])
-        
-        -- 7. Network Loop: Read from Socket -> UI, Read from UI -> Socket
-        -- We spawn a reader thread for the socket
-        void $ forkIO $ forever $ do
-            -- Block reading from TLS
-            msg <- TLS.recvData ctx
-            if BSC.null msg 
-               then return () 
-               else BChan.writeBChan chan (NewMessage $ Message "ai" (Text.decodeUtf8 msg))
-        
-        -- Write loop
-        forever $ do
-            msg <- atomically $ readTChan outChan
-            let body = BSC.unpack $ Text.encodeUtf8 msg
-                httpReq = "POST /post HTTP/1.1\r\n" <>
-                          "Host: " <> host <> "\r\n" <>
-                          "Content-Length: " <> show (length body) <> "\r\n\r\n" <>
-                          body
-            TLS.sendData ctx (LBS.fromStrict $ BSC.pack httpReq)
-
-    where
-      handleErrors :: IO () -> IO ()
-      handleErrors action = catch action $ \(e :: SomeException) -> do
-          let err = Text.pack $ displayException e
-          BChan.writeBChan chan (ErrorMsg err)
-          -- Also print to stderr just in case
-          liftIO $ putStrLn $ "Network Error: " ++ displayException e
-
--- | Bridge between TLS and our IO Engine
-makeBackend :: Engine -> Fd -> TLS.Backend
-makeBackend engine fd = TLS.Backend
-    { TLS.backendFlush = return ()
-    , TLS.backendClose = do
-        t <- submit engine (Close fd)
-        wait t
-    , TLS.backendSend = \bs -> BSU.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
-        t <- submit engine (Write fd (castPtr ptr) len)
-        _ <- wait t
+executeIntent :: OutputIntent -> IO ()
+executeIntent (SendPacket _bs) = do
+    -- Stub: In real world, send to TLS context
+    -- For now, simulate a response after 1s
+    void $ forkIO $ do
+        threadDelay 1000000 
+        -- We can't easily inject back into the stream here without a shared channel reference
+        -- in a robust design, the Network listener would push to the same 'reactorChan'
         return ()
-    , TLS.backendRecv = \len -> do
-        bracket (mallocBytes len) free $ \ptr -> do
-            let loop offset remaining = do
-                    t <- submit engine (Read fd (castPtr (ptr `plusPtr` offset)) remaining)
-                    n <- wait t
-                    if n <= 0
-                       then return offset
-                       else do
-                           let newOff = offset + n
-                           let newRem = remaining - n
-                           if newRem > 0
-                              then loop newOff newRem
-                              else return len
-            
-            total <- loop 0 len
-            if total <= 0
-               then return BSC.empty
-               else BSC.packCStringLen (castPtr ptr, total)
-    }
+executeIntent (LogMessage msg) = appendFile "chat.log" (msg ++ "\n")
+executeIntent _ = return ()

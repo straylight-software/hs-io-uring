@@ -30,6 +30,7 @@ common lang
                   , katip
                   , async
                   , unix
+                  , binary
   ghc-options:      -Wall -Werror -Wcompat -Widentities
                     -Wincomplete-record-updates
                     -Wincomplete-uni-patterns
@@ -51,6 +52,10 @@ library
                    System.IO.Engine.Types
                    System.IO.Engine.Posix
                    System.IO.Engine.URing
+                   System.IO.EventStream
+                   System.IO.EventStream.Journal
+                   System.IO.Reactor
+                   System.IO.Runtime
   other-modules:
   pkgconfig-depends: liburing >= 2.0
   extra-libraries: uring
@@ -58,6 +63,7 @@ library
 executable chat-client
   import:          lang
   main-is:         ChatClient.hs
+  other-modules:   Chat.Logic
   hs-source-dirs:  app
   build-depends:   io-uring
                  , brick
@@ -122,35 +128,29 @@ executable chat-client
 --   build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip
 --   ghc-options:     -rtsopts -O2 -threaded
 
--- test-suite test
---   import:          lang
---   type:            exitcode-stdio-1.0
---   main-is:         Main.hs
---   hs-source-dirs:  test
---   other-modules:
---                    System.IoUring.Test.Concurrency
---                  , System.IoUring.Test.EdgeCases
---                  , System.IoUring.Test.FFI
---                  , System.IoUring.Test.Integration
---                  , System.IoUring.Test.MemorySafety
---                  , System.IoUring.Test.Operations
---                  ,                    System.IoUring.Test.Properties
---                  , System.IoUring.Test.Stress
---                  , System.IoUring.Test.Reactor
---                  , System.IoUring.Test.Buffer
---                  , System.IoUring.Test.ZMQ
---   build-depends:
---                    io-uring
---                  , tasty >=1.2
---                  , tasty-hunit >=0.10
---                  , tasty-quickcheck >=0.10
---                  , QuickCheck >=2.14
---                  , temporary
---                  , async
---                  , zeromq4-haskell
---                  , network
---                  , vector
---                  , primitive
---                  , bytestring
---   ghc-options:     -rtsopts
+test-suite test
+  import:          lang
+  type:            exitcode-stdio-1.0
+  main-is:         Main.hs
+  hs-source-dirs:  test
+  other-modules:
+                   System.IoUring.Test.Concurrency
+                 , System.IoUring.Test.FFI
+                 , System.IoUring.Test.Integration
+                 , System.IoUring.Test.Operations
+                 , System.IoUring.Test.Properties
+  build-depends:
+                   io-uring
+                 , tasty >=1.2
+                 , tasty-hunit >=0.10
+                 , tasty-quickcheck >=0.10
+                 , QuickCheck >=2.14
+                 , temporary
+                 , async
+                 , zeromq4-haskell
+                 , network
+                 , vector
+                 , primitive
+                 , bytestring
+  ghc-options:     -rtsopts
 
