@@ -2,12 +2,32 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
---                                                   // system // io // runtime
+--                                                    // system // io // trinity
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--
+--     "The Trinity engine invented WASM and deterministic replay and safe
+--      asynchrony 35 years before anyone got it."
+--
+--     This module implements the Trinity architecture, originated by John
+--     Carmack in the Quake III Arena engine (1999). The core insight:
+--
+--       1. Game state is a pure function of the input stream
+--       2. Gather all events, then process in one deterministic tick
+--       3. Side effects happen only at frame boundaries
+--       4. Client predicts, server reconciles — same inputs, same outputs
+--
+--     We extend Trinity with:
+--       - Coeffect tracking (prove resource access)
+--       - Cryptographic attestation (sign the reasoning chain)
+--       - io_uring backend (modern kernel async I/O)
+--
+--                                                              — b7r6 // 2026
+--
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-module System.IO.Runtime
-  ( RuntimeConfig (..)
-  , runReactor
+module System.IO.Trinity
+  ( TrinityConfig (..)
+  , runTrinity
   ) where
 
 import Control.Monad (forM_)
@@ -24,54 +44,75 @@ import System.IO.Reactor
   )
 
 -- ════════════════════════════════════════════════════════════════════════════
---                                                               // config
+--                                                                   // config
 -- ════════════════════════════════════════════════════════════════════════════
 
-data RuntimeConfig s e = RuntimeConfig
-  { mode :: StreamMode
-  , stream :: s
-  -- ^ The Journal/EventStream.
-  , tick :: IO (Maybe e)
-  -- ^ Source of new events (Live only). Returns Nothing if no event ready.
+-- | Trinity engine configuration.
+--
+-- The three modes map to Carmack's original design:
+--   - Live: Real I/O, events persisted to journal (game server)
+--   - Replay: Read from journal, verify determinism (demo playback)
+--   - Sim: Synthetic events for testing (bot matches)
+data TrinityConfig s e = TrinityConfig
+  { tMode :: StreamMode
+  -- ^ Execution mode: Live, Replay, or Sim
+  , tStream :: s
+  -- ^ The event journal (EventStream instance)
+  , tTick :: IO (Maybe e)
+  -- ^ Event source — Com_EventLoop() in Q3 terms
   }
 
 -- ════════════════════════════════════════════════════════════════════════════
---                                                               // main loop
+--                                                                // com_frame
 -- ════════════════════════════════════════════════════════════════════════════
 
--- | The main loop.
+-- | The Trinity main loop — Com_Frame() in Haskell.
 --
--- This function drives the entire system. It is agnostic to the domain logic.
-runReactor
+-- @
+-- void Com_Frame( void ) {
+--     com_frameTime = Com_EventLoop();   // ← tTick
+--     SV_Frame( msec );                  // ← react (server)
+--     CL_Frame( msec );                  // ← react (client)
+-- }
+-- @
+--
+-- This function drives the entire system. The Reactor is the pure "game logic"
+-- that transforms events into state transitions and intents. Side effects
+-- (network, disk, GPU) happen only at frame boundaries via intent execution.
+runTrinity
   :: (EventStream s, Reactor r e, Binary e)
-  => RuntimeConfig s e
+  => TrinityConfig s e
   -> r
   -> IO ()
-runReactor config initialR = do
+runTrinity config initialR = do
   stateRef <- newIORef initialR
-  loop stateRef
+  comFrame stateRef
 
   where
-    loop stateRef = do
+    -- the frame loop — runs until no more events
+    comFrame stateRef = do
       currentState <- readIORef stateRef
-      mEntry <- getNextEntry
-      processEntry stateRef currentState mEntry
+      mEntry <- comEventLoop
+      processFrame stateRef currentState mEntry
 
-    getNextEntry
-      | Live <- mode config = pollLiveInput config
-      | Replay <- mode config = next (stream config)
+    -- Com_EventLoop: gather next event based on mode
+    comEventLoop
+      | Live <- tMode config = pollLiveInput config
+      | Replay <- tMode config = next (tStream config)
 
-    processEntry _ _ Nothing = pure ()  -- exit loop or idle
-    processEntry stateRef currentState (Just entry)
+    -- process one frame: react, then execute/verify intents
+    processFrame _ _ Nothing = pure ()  -- exit or idle
+    processFrame stateRef currentState (Just entry)
       | (newState, intents) <- react currentState entry
       = do
-        executeOrVerify intents
+        dispatchIntents intents
         writeIORef stateRef newState
-        loop stateRef
+        comFrame stateRef
 
-    executeOrVerify intents
-      | Live <- mode config = executeIntents intents
-      | Replay <- mode config = verifyIntents intents
+    -- intents dispatch based on mode
+    dispatchIntents intents
+      | Live <- tMode config = executeIntents intents
+      | Replay <- tMode config = verifyIntents intents
 
 -- ════════════════════════════════════════════════════════════════════════════
 --                                                                  // helpers
@@ -79,10 +120,10 @@ runReactor config initialR = do
 
 pollLiveInput
   :: (EventStream s, Binary e)
-  => RuntimeConfig s e
+  => TrinityConfig s e
   -> IO (Maybe (Entry e))
 pollLiveInput config = do
-  mEvent <- tick config
+  mEvent <- tTick config
   wrapAndPersist mEvent
   where
     wrapAndPersist Nothing = pure Nothing
@@ -90,7 +131,7 @@ pollLiveInput config = do
     wrapAndPersist (Just evt)
       | entry <- Entry { sequenceId = 0, timestamp = 0, checksum = 0, event = evt }
       = do
-        append (stream config) entry  -- persist to log
+        append (tStream config) entry  -- persist to journal
         pure (Just entry)
 
 executeIntents :: [OutputIntent] -> IO ()

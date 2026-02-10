@@ -56,8 +56,8 @@ import System.IO.Reactor
   ( OutputIntent (LogMessage, QueryLLM, SendPacket)
   , Reactor (initialState, react)
   )
-import System.IO.Runtime
-  ( RuntimeConfig (RuntimeConfig, mode, stream, tick)
+import System.IO.Trinity
+  ( TrinityConfig (TrinityConfig, tMode, tStream, tTick)
   )
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -231,17 +231,17 @@ runAppWithNetwork sock openaiClient uiChan reactorChan journal = do
       evt <- BChan.readBChan reactorChan
       pure (Just evt)
 
-    config = RuntimeConfig
-      { mode = Live
-      , stream = journal
-      , tick = tickFunc
+    config = TrinityConfig
+      { tMode = Live
+      , tStream = journal
+      , tTick = tickFunc
       }
 
     executor = mkExecutor sock openaiClient reactorChan
 
--- | Specialized runtime loop that updates UI.
+-- | Specialized Trinity loop that updates UI — our Com_Frame.
 runChatRuntime
-  :: RuntimeConfig FileJournal ChatEvent
+  :: TrinityConfig FileJournal ChatEvent
   -> BChan.BChan AppEvent
   -> FileJournal
   -> ChatState
@@ -250,14 +250,14 @@ runChatRuntime
 runChatRuntime config uiChan journal startState executor = do
   -- push initial state update immediately
   BChan.writeBChan uiChan (StateUpdate startState)
-  loop startState
+  comFrame startState
 
   where
-    loop state = do
-      mEvent <- tick config
+    comFrame state = do
+      mEvent <- tTick config
       processEvent state mEvent
 
-    processEvent state Nothing = loop state
+    processEvent state Nothing = comFrame state
     processEvent state (Just evt)
       | entry <- Entry 0 0 0 evt
       , (newState, intents) <- react state entry
@@ -265,7 +265,7 @@ runChatRuntime config uiChan journal startState executor = do
         append journal entry
         mapM_ executor intents
         BChan.writeBChan uiChan (StateUpdate newState)
-        loop newState
+        comFrame newState
 
 mkExecutor
   :: Maybe Socket

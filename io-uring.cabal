@@ -56,7 +56,7 @@ library
                    System.IO.EventStream
                    System.IO.EventStream.Journal
                    System.IO.Reactor
-                   System.IO.Runtime
+                   System.IO.Trinity
   other-modules:
   pkgconfig-depends: liburing >= 2.0
   extra-libraries: uring
