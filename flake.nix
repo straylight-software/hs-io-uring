@@ -1,9 +1,16 @@
 {
-  description = "io-uring Haskell bindings";
+  description = "Trinity Engine - High-performance async I/O engine for Haskell using Linux io_uring";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systems.url = "github:nix-systems/default";
     flake-parts.url = "github:hercules-ci/flake-parts";
+
+    # sensenet provides Buck2 build infrastructure
+    sensenet = {
+      url = "github:straylight-software/sensenet/dev";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,69 +21,119 @@
         "aarch64-linux"
       ];
 
+      imports = [
+        # Import sensenet's Buck2 module
+        inputs.sensenet.flakeModules.buck2
+        inputs.sensenet.flakeModules.std
+      ];
+
       perSystem =
-        {
-          config,
-          self',
-          inputs',
-          pkgs,
-          system,
-          ...
-        }:
+        { pkgs, system, ... }:
         let
-          # Use GHC 9.12 as requested
-          hpkgs = pkgs.haskell.packages.ghc912.override {
-            overrides = self: super: {
-              # Mark zeromq4-haskell as unbroken if marked broken (common for new GHCs)
-              zeromq4-haskell = pkgs.haskell.lib.markUnbroken super.zeromq4-haskell;
-            };
-          };
-
-          # Use callCabal2nix to generate the package derivation
-          io-uring = hpkgs.callCabal2nix "io-uring" ./. {
-            liburing = pkgs.liburing;
-          };
-
-          # Override to ensure system deps are present
-          io-uring-dev = pkgs.haskell.lib.overrideCabal io-uring (drv: {
-            # We rely on automatic pkg-config handling
-            # Just ensure libraries are present
-            libraryPkgconfigDepends = (drv.libraryPkgconfigDepends or [ ]) ++ [ pkgs.liburing ];
-            testPkgconfigDepends = (drv.testPkgconfigDepends or [ ]) ++ [ pkgs.liburing ];
-            extraLibraries = (drv.extraLibraries or [ ]) ++ [ pkgs.liburing ];
-          });
+          # GHC 9.12 with sensenet's haskell overlay
+          inherit (pkgs.haskell.packages) ghc912;
         in
         {
-          packages.default = io-uring-dev;
-          packages.io-uring = io-uring-dev;
-
-          checks = {
-            io-uring-test = io-uring-dev;
-          };
-
-          devShells.default = hpkgs.shellFor {
-            packages = p: [ io-uring-dev ];
-            withHoogle = true;
-
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              pkgs.cabal-install
-              hpkgs.haskell-language-server
-              hpkgs.ghcid
-              hpkgs.hlint
-              hpkgs.ormolu
+          # ══════════════════════════════════════════════════════════════════════
+          # Trinity Engine - Buck2 build
+          # ══════════════════════════════════════════════════════════════════════
+          # Usage: nix develop .#buck2-default
+          #        buck2 build //:trinity-echo
+          buck2.projects.default = {
+            src = ./.;
+            targets = [
+              "//:trinity-echo"
+              "//:trinity-http"
+              "//:trinity-proxy"
             ];
-
-            buildInputs = [
+            toolchain = {
+              cxx.enable = true;
+              haskell = {
+                enable = true;
+                ghcpackages = ghc912;
+                packages = hp: [
+                  # Core deps
+                  hp.primitive
+                  hp.vector
+                  hp.bytestring
+                  hp.network
+                  hp.stm
+                  hp.zeromq4-haskell
+                  hp.warp
+                  hp.wai
+                  hp.http-types
+                  hp.katip
+                  hp.optparse-applicative
+                  hp.async
+                  hp.random
+                  hp.time
+                  # Test deps
+                  hp.tasty
+                  hp.tasty-hunit
+                  hp.tasty-quickcheck
+                  hp.QuickCheck
+                  hp.temporary
+                  hp.unix
+                ];
+              };
+            };
+            extrapackages = [
               pkgs.liburing
               pkgs.zeromq
+              pkgs.pkg-config
             ];
+            extrabuckconfigsections = ''
 
-            shellHook = ''
+              [trinity]
+              liburing_include = ${pkgs.liburing.dev}/include
+              liburing_lib = ${pkgs.liburing}/lib
+            '';
+            devshellpackages = [
+              pkgs.dhall
+              pkgs.dhall-json
+              ghc912.haskell-language-server
+            ];
+            devshellhook = ''
               export PKG_CONFIG_PATH="${pkgs.liburing}/lib/pkgconfig:${pkgs.zeromq}/lib/pkgconfig:$PKG_CONFIG_PATH"
-              echo "io-uring development environment"
+              export LIBRARY_PATH="${pkgs.liburing}/lib:${pkgs.zeromq}/lib:$LIBRARY_PATH"
+              export C_INCLUDE_PATH="${pkgs.liburing.dev}/include:$C_INCLUDE_PATH"
+
+              echo ""
+              echo "  Trinity Engine development environment"
+              echo "  buck2 build //:trinity-echo"
+              echo ""
             '';
           };
+
+          # Legacy cabal-based devshell (keep for compatibility)
+          devShells.cabal =
+            let
+              hpkgs = pkgs.haskell.packages.ghc912.override {
+                overrides = self: super: {
+                  zeromq4-haskell = pkgs.haskell.lib.markUnbroken super.zeromq4-haskell;
+                };
+              };
+              trinity-engine = hpkgs.callCabal2nix "trinity-engine" ./. {
+                liburing = pkgs.liburing;
+              };
+            in
+            hpkgs.shellFor {
+              packages = p: [ trinity-engine ];
+              withHoogle = true;
+              nativeBuildInputs = [
+                pkgs.pkg-config
+                pkgs.cabal-install
+                hpkgs.haskell-language-server
+              ];
+              buildInputs = [
+                pkgs.liburing
+                pkgs.zeromq
+              ];
+              shellHook = ''
+                export PKG_CONFIG_PATH="${pkgs.liburing}/lib/pkgconfig:${pkgs.zeromq}/lib/pkgconfig:$PKG_CONFIG_PATH"
+                echo "Trinity Engine cabal development environment"
+              '';
+            };
         };
     };
 }

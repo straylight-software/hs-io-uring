@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# dhall-to-buck - Transpile BUILD.dhall to BUCK
+set -euo pipefail
+
+[[ $# -lt 1 ]] && { echo "Usage: $0 <BUILD.dhall>" >&2; exit 1; }
+
+INPUT="$1"
+
+# Check if this is the new format (exports { rules, header }) or legacy (List Binary)
+STRUCTURE=$(dhall type <<< "./$INPUT" 2>/dev/null || echo "unknown")
+
+if [[ "$STRUCTURE" == *"rules"* && "$STRUCTURE" == *"header"* ]]; then
+  # New format: { rules : List Text, header : Text }
+  HEADER=$(dhall text <<< "(./$INPUT).header")
+  echo "# Generated from $INPUT"
+  echo "$HEADER"
+  dhall text <<< "let P = ./dhall/prelude/Prelude.dhall in P.Text.concatSep \"\\n\" (./$INPUT).rules"
+  exit 0
+fi
+
+# Legacy format: List C.Binary (for backward compat with existing BUILD.dhall files)
+DEPS=$(dhall text <<< "(./dhall/prelude/extract-deps.dhall) ./$INPUT" 2>/dev/null || echo "")
+
+if [[ -z "$DEPS" ]]; then
+  echo "# Generated from $INPUT"
+  echo 'load("@toolchains//:cxx.bzl", "cxx_binary")'
+  echo ""
+  dhall text <<< "
+let S = ./dhall/prelude/to-starlark.dhall
+let C = ./dhall/prelude/Cxx.dhall
+let t = List/head C.Binary ./$INPUT
+in merge { None = \"\", Some = \\(b : C.Binary) -> S.binary b { compiler = [] : List Text, linker = [] : List Text } } t"
+  exit 0
+fi
+
+FLAGS=$(buck2 run //src/nix-analyze:nix-analyze -- resolve $DEPS 2>/dev/null | grep -v "^\[")
+
+CF="" LF="" next=false
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if $next; then CF+="\"$f\", "; next=false
+  elif [[ "$f" == "-isystem" ]]; then CF+="\"$f\", "; next=true
+  elif [[ "$f" == -I* ]]; then CF+="\"$f\", "
+  elif [[ "$f" == -L* || "$f" == -Wl,* || "$f" == -l* ]]; then LF+="\"$f\", "
+  fi
+done <<< "$FLAGS"
+
+echo "# Generated from $INPUT"
+echo "# Deps: ${DEPS//$'\n'/, }"
+echo ""
+echo 'load("@toolchains//:cxx.bzl", "cxx_binary")'
+echo ""
+dhall text <<< "
+let S = ./dhall/prelude/to-starlark.dhall
+let C = ./dhall/prelude/Cxx.dhall
+let t = List/head C.Binary ./$INPUT
+let f = { compiler = [${CF%,*}], linker = [${LF%,*}] }
+in merge { None = \"\", Some = \\(b : C.Binary) -> S.binary b f } t"

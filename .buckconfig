@@ -1,0 +1,28 @@
+# trinity-engine-hs Buck2 configuration
+#
+# Uses sensenet's Buck2 infrastructure via flake module.
+# Run `nix develop .#buck2-default` to enter the build environment.
+
+[cells]
+root = .
+prelude = nix/build/prelude
+toolchains = toolchains
+none = none
+
+[cell_aliases]
+config = prelude
+ovr_config = prelude
+fbcode = none
+fbsource = none
+fbcode_macros = none
+buck = none
+
+[parser]
+target_platform_detector_spec = target:root//...->prelude//platforms:default
+
+[buck2]
+materializations = deferred
+digest_algorithms = BLAKE3
+
+[build]
+execution_platforms = toolchains//:default

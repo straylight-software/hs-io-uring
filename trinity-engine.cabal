@@ -1,13 +1,15 @@
 cabal-version:      3.0
-name:               io-uring
+name:               trinity-engine
 version:            0.1.0.0
-synopsis:           Type-safe io_uring bindings supporting both file and socket I/O
-homepage:           https://github.com/well-typed/io-uring
+synopsis:           High-performance Haskell I/O engine using Linux io_uring
+description:        Named after Carmack's Trinity engine - fast, async, event-driven.
+                    Type-safe io_uring bindings supporting both file and socket I/O.
+homepage:           https://github.com/anomalyco/trinity-engine-hs
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             Well-Typed LLP
-maintainer:         info@well-typed.com
-copyright:          (c) 2025 Well-Typed LLP
+author:             Anomaly Co
+maintainer:         info@anomaly.co
+copyright:          (c) 2025-2026 Anomaly Co
 category:           System
 build-type:         Simple
 tested-with:        GHC == 9.6, GHC == 9.8, GHC == 9.10, GHC == 9.12
@@ -55,39 +57,39 @@ library
                    System.IoUring.Socket.Batch
   pkgconfig-depends: liburing >= 2.0
 
-executable io-uring-echo
+executable trinity-echo
   import:          lang
   main-is:         EchoServer.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, katip, optparse-applicative
+  build-depends:   trinity-engine, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
-executable io-uring-http
+executable trinity-http
   import:          lang
   main-is:         HttpServer.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, katip, optparse-applicative
+  build-depends:   trinity-engine, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
-executable bench
+executable trinity-bench
   import:          lang
   main-is:         Bench.hs
   hs-source-dirs:  benchmark
-  build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip, optparse-applicative
+  build-depends:   trinity-engine, random, time, zeromq4-haskell, async, bytestring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
-executable zmq-bench
+executable trinity-zmq-bench
   import:          lang
   main-is:         ZmqBench.hs
   hs-source-dirs:  benchmark
-  build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip, optparse-applicative
+  build-depends:   trinity-engine, zeromq4-haskell, time, async, bytestring, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
-executable io-uring-proxy
+executable trinity-proxy
   import:          lang
   main-is:         Http2ZmqProxy.hs
   hs-source-dirs:  app
-  build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip, optparse-applicative
+  build-depends:   trinity-engine, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip, optparse-applicative
   ghc-options:     -rtsopts -O2 -threaded
 
 test-suite test
@@ -102,13 +104,13 @@ test-suite test
                  , System.IoUring.Test.Integration
                  , System.IoUring.Test.MemorySafety
                  , System.IoUring.Test.Operations
-                 ,                    System.IoUring.Test.Properties
+                 , System.IoUring.Test.Properties
                  , System.IoUring.Test.Stress
                  , System.IoUring.Test.Reactor
                  , System.IoUring.Test.Buffer
                  , System.IoUring.Test.ZMQ
   build-depends:
-                   io-uring
+                   trinity-engine
                  , tasty >=1.2
                  , tasty-hunit >=0.10
                  , tasty-quickcheck >=0.10
@@ -122,4 +124,3 @@ test-suite test
                  , bytestring
                  , unix
   ghc-options:     -rtsopts
-

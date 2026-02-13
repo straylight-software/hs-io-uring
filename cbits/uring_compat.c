@@ -1,6 +1,19 @@
-/* uring_compat.c - Compatibility layer for io_uring operations */
+/* uring_compat.c - Compatibility layer for io_uring operations
+ *
+ * This file must be compiled as C++ (with clang++) because liburing
+ * uses C++11 atomics (memory_order_*) in its inline functions.
+ * We use extern "C" to ensure C linkage for the Haskell FFI.
+ */
 
+#define _GNU_SOURCE
+#include <signal.h>     /* For sigset_t */
+#include <fcntl.h>      /* For AT_FDCWD */
+#include <sys/wait.h>   /* For idtype_t, id_t */
 #include <liburing.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <string.h>
@@ -196,3 +209,7 @@ int hs_uring_probe_op(struct io_uring *ring, int op) {
     io_uring_free_probe(probe);
     return res;
 }
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
