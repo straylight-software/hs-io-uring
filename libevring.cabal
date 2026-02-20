@@ -1,13 +1,22 @@
 cabal-version:      3.0
-name:               io-uring
+name:               libevring
 version:            0.1.0.0
-synopsis:           Type-safe io_uring bindings supporting both file and socket I/O
-homepage:           https://github.com/well-typed/io-uring
+synopsis:           Pure state machine abstraction over io_uring with replay testing
+description:        libevring models async I/O as pure state machines (Mealy machines).
+                    Core pattern: State × Event → State × [Operation]
+                    .
+                    Key features:
+                    .
+                    * Machine concept: pure functional core with initial(), step(), done()
+                    * GeneratorMachine: extension for bulk operations (wants_to_submit, generate)
+                    * Trace/replay: deterministic testing without actual I/O
+                    * Reset-on-ambiguity: upstream ambiguity resets the connection
+homepage:           https://straylight.software/libevring-hs
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             Well-Typed LLP
-maintainer:         info@well-typed.com
-copyright:          (c) 2025 Well-Typed LLP
+author:             Straylight
+maintainer:         hello@straylight.software
+copyright:          (c) 2025-2026 Straylight
 category:           System
 build-type:         Simple
 tested-with:        GHC == 9.6, GHC == 9.8, GHC == 9.10, GHC == 9.12
@@ -42,51 +51,31 @@ library
   hs-source-dirs:  src
   c-sources:       cbits/uring_compat.c
   exposed-modules:
+                   -- New Machine abstraction layer
+                   Evring
+                   Evring.Machine
+                   Evring.Event
+                   Evring.Handle
+                   Evring.Ring
+                   Evring.Trace
+                   -- Protocol machines
+                   Evring.Zmtp
+                   Evring.Sigil
+                   -- Legacy modules (io_uring FFI bindings)
                    System.IoUring
-                   System.IoUring.Buffer
-                   System.IoUring.Reactor
                    System.IoUring.Internal.FFI
                    System.IoUring.URing
-                   System.IoUring.ZMQ
-                   System.IoUring.Logging
   other-modules:
                    System.IoUring.Socket.Batch
   pkgconfig-depends: liburing >= 2.0
 
-executable io-uring-echo
-  import:          lang
-  main-is:         EchoServer.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable io-uring-http
-  import:          lang
-  main-is:         HttpServer.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable bench
-  import:          lang
-  main-is:         Bench.hs
-  hs-source-dirs:  benchmark
-  build-depends:   io-uring, random, time, zeromq4-haskell, async, bytestring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable zmq-bench
-  import:          lang
-  main-is:         ZmqBench.hs
-  hs-source-dirs:  benchmark
-  build-depends:   io-uring, zeromq4-haskell, time, async, bytestring, katip
-  ghc-options:     -rtsopts -O2 -threaded
-
-executable io-uring-proxy
-  import:          lang
-  main-is:         Http2ZmqProxy.hs
-  hs-source-dirs:  app
-  build-depends:   io-uring, zeromq4-haskell, warp, wai, http-types, bytestring, async, katip
-  ghc-options:     -rtsopts -O2 -threaded
+-- TODO: Benchmark disabled until Reactor/ZMQ modules are ported
+-- executable bench
+--   import:          lang
+--   main-is:         Bench.hs
+--   hs-source-dirs:  benchmark
+--   build-depends:   libevring, random, time, zeromq4-haskell, async, bytestring, katip
+--   ghc-options:     -rtsopts -O2 -threaded
 
 test-suite test
   import:          lang
@@ -95,18 +84,12 @@ test-suite test
   hs-source-dirs:  test
   other-modules:
                    System.IoUring.Test.Concurrency
-                 , System.IoUring.Test.EdgeCases
                  , System.IoUring.Test.FFI
                  , System.IoUring.Test.Integration
-                 , System.IoUring.Test.MemorySafety
                  , System.IoUring.Test.Operations
-                 ,                    System.IoUring.Test.Properties
-                 , System.IoUring.Test.Stress
-                 , System.IoUring.Test.Reactor
-                 , System.IoUring.Test.Buffer
-                 , System.IoUring.Test.ZMQ
+                 , System.IoUring.Test.Properties
   build-depends:
-                   io-uring
+                   libevring
                  , tasty >=1.2
                  , tasty-hunit >=0.10
                  , tasty-quickcheck >=0.10

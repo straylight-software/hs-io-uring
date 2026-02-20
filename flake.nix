@@ -1,5 +1,5 @@
 {
-  description = "io-uring Haskell bindings";
+  description = "libevring: Pure state machine abstraction over io_uring";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -28,12 +28,12 @@
           hpkgs = pkgs.haskell.packages.ghc910;
 
           # Use callCabal2nix to generate the package derivation
-          io-uring = hpkgs.callCabal2nix "io-uring" ./. {
+          libevring = hpkgs.callCabal2nix "libevring" ./. {
             liburing = pkgs.liburing;
           };
 
           # Override to ensure system deps are present
-          io-uring-dev = pkgs.haskell.lib.overrideCabal io-uring (drv: {
+          libevring-dev = pkgs.haskell.lib.overrideCabal libevring (drv: {
             # We rely on automatic pkg-config handling
             # Just ensure libraries are present
             libraryPkgconfigDepends = (drv.libraryPkgconfigDepends or [ ]) ++ [ pkgs.liburing ];
@@ -42,11 +42,11 @@
           });
         in
         {
-          packages.default = io-uring-dev;
-          packages.io-uring = io-uring-dev;
+          packages.default = libevring-dev;
+          packages.libevring = libevring-dev;
 
           devShells.default = hpkgs.shellFor {
-            packages = p: [ io-uring-dev ];
+            packages = p: [ libevring-dev ];
             withHoogle = true;
 
             nativeBuildInputs = [
@@ -65,7 +65,7 @@
 
             shellHook = ''
               export PKG_CONFIG_PATH="${pkgs.liburing}/lib/pkgconfig:${pkgs.zeromq}/lib/pkgconfig:$PKG_CONFIG_PATH"
-              echo "io-uring development environment"
+              echo "libevring development environment"
             '';
           };
         };
