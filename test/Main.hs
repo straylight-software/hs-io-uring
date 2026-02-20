@@ -10,6 +10,7 @@ import qualified System.IoUring.Test.Operations
 import qualified System.IoUring.Test.Properties
 import qualified System.IoUring.Test.Integration
 import qualified System.IoUring.Test.Concurrency
+import qualified Evring.Test.Sigil
 
 main :: IO ()
 main = defaultMain tests
@@ -21,4 +22,5 @@ tests = testGroup "libevring Test Suite"
   , System.IoUring.Test.Properties.tests
   , System.IoUring.Test.Integration.tests
   , System.IoUring.Test.Concurrency.tests
+  , Evring.Test.Sigil.tests
   ]
