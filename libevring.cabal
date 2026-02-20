@@ -89,6 +89,7 @@ test-suite test
                  , System.IoUring.Test.Operations
                  , System.IoUring.Test.Properties
                  , Evring.Test.Sigil
+                 , Evring.Test.Zmtp
   build-depends:
                    libevring
                  , tasty >=1.2
